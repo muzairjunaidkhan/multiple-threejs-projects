@@ -1,0 +1,166 @@
+/* ═══════════════════════════════════════════
+   BASE RESET & CANVAS SETUP
+═══════════════════════════════════════════ */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: #0a0a0f;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    color: #e0e0e0;
+}
+
+/* Full-screen canvas */
+#canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    outline: none;
+}
+
+/* ═══════════════════════════════════════════
+   MANDATORY IDENTIFICATION OVERLAY
+   Student name + project name — bottom bar
+═══════════════════════════════════════════ */
+#overlay {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+    padding: 12px 20px 10px;
+    pointer-events: none;
+}
+
+#overlay-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    opacity: 0.9;
+}
+
+#student-name   { color: #7dd3fc; font-weight: bold; }
+#divider        { color: #555; }
+#project-name   { color: #a3a3a3; }
+
+/* ═══════════════════════════════════════════
+   INSTRUCTIONS HUD — top-left
+═══════════════════════════════════════════ */
+#instructions {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 100;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(125,211,252,0.2);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 12px;
+    line-height: 1.8;
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+    min-width: 210px;
+}
+
+#instructions h3 {
+    color: #7dd3fc;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+#instructions ul {
+    list-style: none;
+    color: #aaa;
+}
+
+#instructions li { margin-bottom: 2px; }
+
+kbd {
+    background: rgba(255,255,255,0.12);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: inherit;
+    color: #e0e0e0;
+}
+
+#animation-label {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    color: #aaa;
+    font-size: 12px;
+}
+
+#anim-name {
+    color: #86efac;       /* green accent for current animation state */
+    font-weight: bold;
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADING SCREEN
+═══════════════════════════════════════════ */
+#loading-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: #0a0a0f;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.6s ease;
+}
+
+#loading-screen.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+#loading-content {
+    text-align: center;
+}
+
+#loading-title {
+    font-size: 18px;
+    letter-spacing: 0.2em;
+    color: #7dd3fc;
+    margin-bottom: 20px;
+}
+
+#loading-bar-wrap {
+    width: 260px;
+    height: 3px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 auto 12px;
+}
+
+#loading-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #7dd3fc, #86efac);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+#loading-hint {
+    font-size: 11px;
+    color: #555;
+    letter-spacing: 0.05em;
+}

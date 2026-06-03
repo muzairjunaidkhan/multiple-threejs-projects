@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Animated Character | Three.js Project</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+    <!-- ═══════════════════════════════════════════
+         MANDATORY IDENTIFICATION OVERLAY
+         Shows student name + project name
+    ═══════════════════════════════════════════ -->
+    <div id="overlay">
+        <div id="overlay-content">
+            <span id="student-name">Your Name</span>
+            <span id="divider">·</span>
+            <span id="project-name">Animated Character — Three.js</span>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         HUD: Instructions panel (top-left)
+    ═══════════════════════════════════════════ -->
+    <div id="instructions">
+        <h3>Controls</h3>
+        <ul>
+            <li><kbd>Click</kbd> — Lock mouse / shoot raycast</li>
+            <li><kbd>W A S D</kbd> — Move (camera-relative)</li>
+            <li><kbd>Space</kbd> — Jump</li>
+            <li><kbd>Mouse</kbd> — Look around (FPS)</li>
+            <li><kbd>Esc</kbd> — Release mouse</li>
+        </ul>
+        <div id="animation-label">Animation: <span id="anim-name">Idle</span></div>
+    </div>
+    
+    <!-- ═══════════════════════════════════════════
+         Canvas: Three.js renders here
+    ═══════════════════════════════════════════ -->
+    <canvas id="canvas"></canvas>
+
+    <!-- ═══════════════════════════════════════════
+         Loading screen shown while assets load
+    ═══════════════════════════════════════════ -->
+    <div id="loading-screen">
+        <div id="loading-content">
+            <div id="loading-title">Loading Scene…</div>
+            <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+            <div id="loading-hint">Initialising physics · Loading character</div>
+        </div>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>
