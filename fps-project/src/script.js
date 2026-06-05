@@ -192,15 +192,16 @@ document.body.appendChild(crosshair)
 // POINTER LOCK + MOUSE LOOK
 // ─────────────────────────────────────────
 let isLocked = false
-canvas.addEventListener('click', () => { if (!isLocked) canvas.requestPointerLock() })
+canvas.addEventListener('click', () => { if (!isLocked && !wheelOpen) canvas.requestPointerLock() })
 
 document.addEventListener('pointerlockchange', () => {
     isLocked = document.pointerLockElement === canvas
-    crosshair.style.display = isLocked ? 'block' : 'none'
+    // Show crosshair only when pointer is locked AND wheel is NOT open
+    crosshair.style.display = (isLocked && !wheelOpen) ? 'block' : 'none'
 })
 
 document.addEventListener('mousemove', (e) => {
-    if (!isLocked) return
+    if (!isLocked || wheelOpen) return
     targetYaw -= e.movementX * CAM.yawSensitivity
     targetPitch += e.movementY * CAM.pitchSensitivity
     targetPitch = THREE.MathUtils.clamp(targetPitch, 0.08, 1.4)
@@ -209,6 +210,51 @@ document.addEventListener('mousemove', (e) => {
 window.addEventListener('wheel', (e) => {
     CAM.distance = THREE.MathUtils.clamp(CAM.distance + e.deltaY * 0.01, 1.5, 14)
 }, { passive: true })
+
+// ─────────────────────────────────────────
+// EMOTE WHEEL UI
+// ─────────────────────────────────────────
+const wheelContainer = document.getElementById('emote-wheel')
+const wheelSegments = document.querySelectorAll('.wheel-segment')
+
+function openWheel() {
+    wheelOpen = true
+    wheelContainer.classList.remove('hidden')
+    if (isLocked) document.exitPointerLock()
+}
+
+function closeWheel() {
+    wheelOpen = false
+    wheelContainer.classList.add('hidden')
+    if (canvas && !isLocked) {
+        setTimeout(() => canvas.requestPointerLock(), 100)
+    }
+}
+
+function playEmote(emoteName) {
+    if (!actions[emoteName]) return
+    lastLocomotionState = currentState
+    const emoteDurations = { Wave: 1.0, Dance: 4.0, Celebrate: 2.8, Cry: 2.2 }
+    emotePlayTimer = emoteDurations[emoteName] || 1.5
+    isPlayingEmote = true
+    setState(emoteName)
+    closeWheel()
+}
+
+wheelSegments.forEach((segment) => {
+    segment.addEventListener('click', (e) => {
+        const emoteName = segment.dataset.emote
+        const stateName = emoteName.charAt(0).toUpperCase() + emoteName.slice(1)
+        playEmote(stateName)
+        e.stopPropagation()
+    })
+})
+
+document.addEventListener('click', (e) => {
+    if (wheelOpen && !wheelContainer.contains(e.target)) {
+        closeWheel()
+    }
+})
 
 // ─────────────────────────────────────────
 // INPUT
@@ -229,6 +275,15 @@ window.addEventListener('keydown', (e) => {
         case 'KeyA': case 'ArrowLeft': keys.left = true; break
         case 'KeyD': case 'ArrowRight': keys.right = true; break
         case 'ShiftLeft': case 'ShiftRight': keys.walk = true; break
+        case 'KeyV':
+            // Toggle emote wheel
+            if (wheelOpen) {
+                closeWheel()
+            } else {
+                openWheel()
+            }
+            e.preventDefault()
+            break
         case 'Space':
             e.preventDefault()
             jumpBufferTimer = JUMP_BUFFER   // buffer the press; consumed when grounded
@@ -346,6 +401,12 @@ let hasMoveInput = false    // intent flag, read by the animation FSM
 function updateMovement(dt) {
     if (!characterBody) return
 
+    // Suppress movement input while emote is playing
+    if (isPlayingEmote) {
+        characterBody.setLinvel({ x: 0, y: characterBody.linvel().y, z: 0 }, true)
+        return
+    }
+
     // Camera-relative movement basis (flattened onto the XZ plane).
     _yawQuat.setFromAxisAngle(_axisY, camYaw)
     _moveForward.set(0, 0, -1).applyQuaternion(_yawQuat).setY(0).normalize()
@@ -399,11 +460,19 @@ function updateMovement(dt) {
 let characterModel = null
 let mixer = null
 const actions = {}             // name -> AnimationAction
-let currentState = ''          // 'Idle' | 'Walk' | 'Run' | 'Jump'
+let currentState = ''          // 'Idle' | 'Walk' | 'Run' | 'Jump' | 'Wave' | 'Dance' | 'Celebrate' | 'Cry'
 let currentAction = null
 
 let smoothedSpeed = 0          // persistent, filtered horizontal speed
 let airborneTimer = 0          // seconds spent off the ground
+
+// ─────────────────────────────────────────
+// EMOTE WHEEL STATE
+// ─────────────────────────────────────────
+let wheelOpen = false          // whether emote wheel UI is visible
+let isPlayingEmote = false     // actively playing a one-shot emote animation
+let lastLocomotionState = 'Idle'  // restore to this state when emote finishes
+let emotePlayTimer = 0         // countdown timer for emote duration
 
 function setState(name) {
     if (currentState === name) return          // already playing → do nothing
@@ -446,6 +515,17 @@ function pickLocomotion() {
 function updateAnimation(dt) {
     if (!mixer || !characterBody) return
 
+    // Handle emote playback duration
+    if (isPlayingEmote) {
+        emotePlayTimer -= dt
+        if (emotePlayTimer <= 0) {
+            // Emote finished: return to last locomotion state
+            isPlayingEmote = false
+            setState(lastLocomotionState)
+        }
+        return  // skip locomotion state machine while emote plays
+    }
+
     const vel = characterBody.linvel()
     const horizontalSpeed = Math.hypot(vel.x, vel.z)
     smoothedSpeed = THREE.MathUtils.lerp(smoothedSpeed, horizontalSpeed, 0.25)
@@ -471,6 +551,11 @@ const ANIM_FILES = [
     { name: 'Jump', path: './animations/Jump.fbx' },
     { name: 'Run', path: './animations/Running.fbx' },
     { name: 'Walk', path: './animations/Walking.fbx' },
+    // Emote animations (one-shot)
+    { name: 'Wave', path: './animations/Waving.fbx' },
+    { name: 'Dance', path: './animations/Wave Hip Hop Dance.fbx' },
+    { name: 'Celebrate', path: './animations/Rallying.fbx' },
+    { name: 'Cry', path: './animations/Crying.fbx' },
 ]
 
 const loadFBX = (loader, path) =>
@@ -528,7 +613,10 @@ async function loadCharacter() {
                 clip.name = name
                 makeInPlace(clip)            // remove baked-in root motion
                 const action = mixer.clipAction(clip)
-                if (name === 'Jump') {
+                
+                // Determine if this is an emote (one-shot) or locomotion (loop)
+                const isEmote = ['Wave', 'Dance', 'Celebrate', 'Cry'].includes(name)
+                if (isEmote || name === 'Jump') {
                     action.loop = THREE.LoopOnce
                     action.clampWhenFinished = true
                 } else {
