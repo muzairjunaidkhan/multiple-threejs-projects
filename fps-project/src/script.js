@@ -31,8 +31,8 @@ const MAX_SUBSTEPS = 4                 // clamp catch-up steps after a stall
 
 const GRAVITY = -24                    // m/s² (snappier than real 9.81)
 
-const CAPSULE_RADIUS = 0.18        // slimmer — fits through narrower doors
-const CAPSULE_HALF_HEIGHT = 0.45
+const CAPSULE_RADIUS = 0.16        // slimmer — fits through narrower doors
+const CAPSULE_HALF_HEIGHT = 0.32
 const CAPSULE_BOTTOM = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS   // 0.63
 
 // Ground ray: start just below the body centre (still inside the capsule) and
@@ -45,7 +45,7 @@ const RAY_LENGTH = CAPSULE_BOTTOM + 0.15             // 0.90
 // Movement
 const WALK_SPEED = 2.2
 const RUN_SPEED = 5.0
-const JUMP_SPEED = 8.0                 // initial upward velocity on jump
+const JUMP_SPEED = 7.0                 // initial upward velocity on jump
 const AIR_CONTROL = 0.12               // 0 = no air steering, 1 = full instant
 const COYOTE_TIME = 0.10               // grace to still jump just after leaving ground
 const JUMP_BUFFER = 0.12               // remember a jump press made just before landing
@@ -104,8 +104,8 @@ scene.fog = new THREE.FogExp2(0xc9a96e, 0.012) // lighter, longer fog for open d
 // CAMERA (orbiting third-person)
 // ─────────────────────────────────────────
 const CAM = {
-    distance: 4.5,
-    height: 1.4,
+    distance: 1.5,
+    height: 0.5,
     yawSensitivity: 0.0035,
     pitchSensitivity: 0.003,
     fov: 70,
@@ -133,6 +133,91 @@ renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.shadowMap.enabled = SHADOW.enabled
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+// ─────────────────────────────────────────
+// DEBUG HELPERS — capsule visualiser
+// ─────────────────────────────────────────
+const DEBUG = { showCapsule: false }
+
+let capsuleHelper = null
+
+function createCapsuleHelper() {
+    const group = new THREE.Group()
+
+    // ── Cylinder body (the straight middle section) ──
+    const bodyGeo = new THREE.CylinderGeometry(
+        CAPSULE_RADIUS, CAPSULE_RADIUS,
+        CAPSULE_HALF_HEIGHT * 2,
+        16, 1, true   // open-ended so hemisphere joins look clean
+    )
+    const wireMat = new THREE.MeshBasicMaterial({
+        color: 0x00ff88,
+        wireframe: true,
+        depthTest: false,   // always visible through walls
+        transparent: true,
+        opacity: 0.7,
+    })
+    group.add(new THREE.Mesh(bodyGeo, wireMat))
+
+    // ── Top hemisphere ──
+    const topGeo = new THREE.SphereGeometry(CAPSULE_RADIUS, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2)
+    const topHemi = new THREE.Mesh(topGeo, wireMat)
+    topHemi.position.y = CAPSULE_HALF_HEIGHT
+    group.add(topHemi)
+
+    // ── Bottom hemisphere ──
+    const botGeo = new THREE.SphereGeometry(CAPSULE_RADIUS, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)
+    const botHemi = new THREE.Mesh(botGeo, wireMat)
+    botHemi.position.y = -CAPSULE_HALF_HEIGHT
+    group.add(botHemi)
+
+    // ── Centre cross (shows exact physics origin) ──
+    const crossMat = new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false })
+    const crossSize = 0.15
+    const crossGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-crossSize, 0, 0),
+        new THREE.Vector3( crossSize, 0, 0),
+        new THREE.Vector3(0, -crossSize, 0),
+        new THREE.Vector3(0,  crossSize, 0),
+        new THREE.Vector3(0, 0, -crossSize),
+        new THREE.Vector3(0, 0,  crossSize),
+    ])
+    crossGeo.setIndex([0,1, 2,3, 4,5])
+    const cross = new THREE.LineSegments(crossGeo, crossMat)
+    group.add(cross)
+
+    // ── Foot marker (shows where ground ray starts) ──
+    const footMat = new THREE.LineBasicMaterial({ color: 0xffff00, depthTest: false })
+    const footGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-0.2, -CAPSULE_BOTTOM, 0),
+        new THREE.Vector3( 0.2, -CAPSULE_BOTTOM, 0),
+        new THREE.Vector3(0, -CAPSULE_BOTTOM, -0.2),
+        new THREE.Vector3(0, -CAPSULE_BOTTOM,  0.2),
+    ])
+    footGeo.setIndex([0,1, 2,3])
+    group.add(new THREE.LineSegments(footGeo, footMat))
+
+    // ── Ray visualiser (shows ground detection ray) ──
+    const rayMat = new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false })
+    const rayStart = -(CAPSULE_BOTTOM - RAY_ORIGIN_OFFSET)   // matches checkGround()
+    const rayEnd   = rayStart - RAY_LENGTH
+    const rayGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, rayStart, 0),
+        new THREE.Vector3(0, rayEnd,   0),
+    ])
+    group.add(new THREE.Line(rayGeo, rayMat))
+
+    group.visible = DEBUG.showCapsule
+    scene.add(group)
+    return group
+}
+
+function updateCapsuleHelper() {
+    if (!capsuleHelper || !characterBody) return
+    const p = characterBody.translation()
+    // Physics body centre → helper sits at exact body position
+    capsuleHelper.position.set(p.x, p.y, p.z)
+}
 
 // ─────────────────────────────────────────
 // LIGHTING
@@ -325,7 +410,7 @@ window.addEventListener('keyup', (e) => {
 // ─────────────────────────────────────────
 const gui = new GUI({ title: 'Settings' })
 const cf = gui.addFolder('Camera')
-cf.add(CAM, 'distance', 1.5, 14, 0.1).name('Distance').listen()
+cf.add(CAM, 'distance', 0.5, 14, 0.1).name('Distance').listen()
 cf.add(CAM, 'height', 0.5, 3.0, 0.05).name('Look Height')
 cf.add(CAM, 'fov', 50, 110, 1).name('FOV').onChange(v => { camera.fov = v; camera.updateProjectionMatrix() })
 cf.add(CAM, 'yawSensitivity', 0.0005, 0.01, 0.0001).name('H Sensitivity')
@@ -355,6 +440,12 @@ const SCENE = { showClouds: false }   // default OFF
 const scf = gui.addFolder('Scene')
 scf.add(SCENE, 'showClouds').name('Show Clouds').onChange(v => {
     cloudObjects.forEach(c => { c.visible = v })
+})
+
+const dbf = gui.addFolder('Debug')
+dbf.add(DEBUG, 'showCapsule').name('Show Capsule').onChange(v => {
+    if (!capsuleHelper) capsuleHelper = createCapsuleHelper()
+    capsuleHelper.visible = v
 })
 
 // ─────────────────────────────────────────
@@ -909,7 +1000,8 @@ function autoSpawn(model) {
     const groundY = box.min.y
 
     const spawnY = groundY + 90.0
-    characterBody.setTranslation({ x: center.x, y: spawnY, z: center.z }, true)
+    //position x is temparily set to the left remove it in futre when we have a proper spawn point
+    characterBody.setTranslation({ x: (center.x - 60), y: spawnY, z: center.z }, true)
     characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
 
     console.log(`[spawn] center x:${center.x.toFixed(2)} y:${spawnY.toFixed(2)} z:${center.z.toFixed(2)}`)
@@ -1033,6 +1125,8 @@ function tick() {
         if (characterModel) {
             // Body centre → feet: drop the model by CAPSULE_BOTTOM.
             characterModel.position.set(_smoothPos.x, _smoothPos.y - CAPSULE_BOTTOM, _smoothPos.z)
+
+            updateCapsuleHelper()
 
             // Face the horizontal movement direction.
             const vel = characterBody.linvel()
