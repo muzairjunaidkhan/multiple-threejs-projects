@@ -18,6 +18,7 @@
 
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import RAPIER from '@dimforge/rapier3d-compat'
 import GUI from 'lil-gui'
 
@@ -90,9 +91,12 @@ const setLoading = (pct) => { if (loadingBar) loadingBar.style.width = `${pct}%`
 // ─────────────────────────────────────────
 // SCENE
 // ─────────────────────────────────────────
+// const scene = new THREE.Scene()
+// scene.background = new THREE.Color(0x1a1a2e)
+// scene.fog = new THREE.FogExp2(0x1a1a2e, 0.04)
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x1a1a2e)
-scene.fog = new THREE.FogExp2(0x1a1a2e, 0.04)
+scene.background = new THREE.Color(0xc9a96e)   // desert sky tan
+scene.fog = new THREE.FogExp2(0xc9a96e, 0.012) // lighter, longer fog for open desert
 
 // ─────────────────────────────────────────
 // CAMERA (orbiting third-person)
@@ -149,39 +153,39 @@ scene.add(sunLight)
 // ─────────────────────────────────────────
 // WORLD GEOMETRY (visuals)
 // ─────────────────────────────────────────
-const groundMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 60),
-    new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
-)
-groundMesh.rotation.x = -Math.PI / 2
-groundMesh.receiveShadow = SHADOW.meshReceiveShadow
-scene.add(groundMesh)
+// const groundMesh = new THREE.Mesh(
+//     new THREE.PlaneGeometry(60, 60),
+//     new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
+// )
+// groundMesh.rotation.x = -Math.PI / 2
+// groundMesh.receiveShadow = SHADOW.meshReceiveShadow
+// scene.add(groundMesh)
 
-const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
-grid.position.y = 0.002
-scene.add(grid)
+// const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
+// grid.position.y = 0.002
+// scene.add(grid)
 
-const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
-function makePlatform(p) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
-    m.position.set(p.x, p.y, p.z)
-    m.castShadow = SHADOW.meshCastShadow
-    m.receiveShadow = SHADOW.meshReceiveShadow
-    scene.add(m)
-}
-LEVEL_PLATFORMS.forEach(makePlatform)
+// const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
+// function makePlatform(p) {
+//     const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
+//     m.position.set(p.x, p.y, p.z)
+//     m.castShadow = SHADOW.meshCastShadow
+//     m.receiveShadow = SHADOW.meshReceiveShadow
+//     scene.add(m)
+// }
+// LEVEL_PLATFORMS.forEach(makePlatform)
 
-function makeBox(b) {
-    const m = new THREE.Mesh(
-        new THREE.BoxGeometry(b.w, b.h, b.d),
-        new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
-    )
-    m.position.set(b.x, b.y, b.z)
-    m.castShadow = SHADOW.meshCastShadow
-    m.receiveShadow = SHADOW.meshReceiveShadow
-    scene.add(m)
-}
-LEVEL_BOXES.forEach(makeBox)
+// function makeBox(b) {
+//     const m = new THREE.Mesh(
+//         new THREE.BoxGeometry(b.w, b.h, b.d),
+//         new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
+//     )
+//     m.position.set(b.x, b.y, b.z)
+//     m.castShadow = SHADOW.meshCastShadow
+//     m.receiveShadow = SHADOW.meshReceiveShadow
+//     scene.add(m)
+// }
+// LEVEL_BOXES.forEach(makeBox)
 
 // ─────────────────────────────────────────
 // CROSSHAIR (visible only while pointer is locked)
@@ -351,21 +355,48 @@ let world = null
 let characterBody = null
 let characterCollider = null   // excluded from the ground raycast
 
+// async function initPhysics() {
+//     await RAPIER.init()
+//     world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 })
+//     world.timestep = FIXED_TIME_STEP
+
+//     // Ground (large static slab centred at y=0; top surface at y≈0.05)
+//     const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+//     world.createCollider(RAPIER.ColliderDesc.cuboid(30, 0.05, 30), groundBody)
+
+//     LEVEL_PLATFORMS.forEach(p => addStaticBox(p.x, p.y, p.z, p.w / 2, p.h / 2, p.d / 2))
+//     LEVEL_BOXES.forEach(b => addStaticBox(b.x, b.y, b.z, b.w / 2, b.h / 2, b.d / 2))
+
+//     // Character: dynamic capsule, rotation locked so it never tips over.
+//     // No linear damping — air momentum is preserved for natural jump arcs;
+//     // ground velocity is set explicitly every step so damping is irrelevant there.
+//     characterBody = world.createRigidBody(
+//         RAPIER.RigidBodyDesc.dynamic()
+//             .setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
+//             .lockRotations()
+//             .setLinearDamping(0)
+//     )
+
+//     characterCollider = world.createCollider(
+//         RAPIER.ColliderDesc.capsule(CAPSULE_HALF_HEIGHT, CAPSULE_RADIUS)
+//             .setFriction(0.0)
+//             .setRestitution(0.0),
+//         characterBody
+//     )
+// }
+
+// function addStaticBox(x, y, z, hw, hh, hd) {
+//     const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z))
+//     world.createCollider(RAPIER.ColliderDesc.cuboid(hw, hh, hd), b)
+// }
+
 async function initPhysics() {
     await RAPIER.init()
     world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 })
     world.timestep = FIXED_TIME_STEP
 
-    // Ground (large static slab centred at y=0; top surface at y≈0.05)
-    const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(RAPIER.ColliderDesc.cuboid(30, 0.05, 30), groundBody)
-
-    LEVEL_PLATFORMS.forEach(p => addStaticBox(p.x, p.y, p.z, p.w / 2, p.h / 2, p.d / 2))
-    LEVEL_BOXES.forEach(b => addStaticBox(b.x, b.y, b.z, b.w / 2, b.h / 2, b.d / 2))
-
-    // Character: dynamic capsule, rotation locked so it never tips over.
-    // No linear damping — air momentum is preserved for natural jump arcs;
-    // ground velocity is set explicitly every step so damping is irrelevant there.
+    // No ground slab here — trimesh from city model handles all collision.
+    // Character spawns high; autoSpawn() will reposition after city loads.
     characterBody = world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic()
             .setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
@@ -381,9 +412,61 @@ async function initPhysics() {
     )
 }
 
-function addStaticBox(x, y, z, hw, hh, hd) {
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z))
-    world.createCollider(RAPIER.ColliderDesc.cuboid(hw, hh, hd), b)
+// ─────────────────────────────────────────
+// TRIMESH COLLIDER — built from city geometry
+// Skips tiny props (bounding box < MIN_COLLIDER_SIZE) to keep
+// triangle count manageable for Rapier.
+// ─────────────────────────────────────────
+const MIN_COLLIDER_SIZE = 1.0   // units — tweak if small props need collision
+
+function buildCityCollider(model) {
+    const vertices = []
+    const indices = []
+    let vertexOffset = 0
+
+    model.traverse(c => {
+        if (!c.isMesh) return
+
+        // Skip tiny decorative props
+        const box = new THREE.Box3().setFromObject(c)
+        const size = box.getSize(new THREE.Vector3())
+        if (Math.max(size.x, size.y, size.z) < MIN_COLLIDER_SIZE) return
+
+        const geom = c.geometry
+        const position = geom.attributes.position
+        c.updateWorldMatrix(true, false)
+        const matrix = c.matrixWorld
+
+        const v = new THREE.Vector3()
+        for (let i = 0; i < position.count; i++) {
+            v.set(position.getX(i), position.getY(i), position.getZ(i))
+                .applyMatrix4(matrix)
+            vertices.push(v.x, v.y, v.z)
+        }
+
+        if (geom.index) {
+            for (let i = 0; i < geom.index.count; i++) {
+                indices.push(geom.index.array[i] + vertexOffset)
+            }
+        } else {
+            for (let i = 0; i < position.count; i++) {
+                indices.push(i + vertexOffset)
+            }
+        }
+
+        vertexOffset += position.count
+    })
+
+    const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(
+        RAPIER.ColliderDesc.trimesh(
+            new Float32Array(vertices),
+            new Uint32Array(indices)
+        ),
+        cityBody
+    )
+
+    console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} verts, ${(indices.length / 3).toLocaleString()} tris`)
 }
 
 // ─────────────────────────────────────────
@@ -624,7 +707,7 @@ async function loadCharacter() {
     }
 
     characterModel = fbx
-    characterModel.scale.setScalar(0.01)          // FBX is in cm → metres
+    characterModel.scale.setScalar(0.005)          // FBX is in cm → metres
     characterModel.traverse(c => {
         if (c.isMesh) { c.castShadow = SHADOW.meshCastShadow; c.receiveShadow = SHADOW.meshReceiveShadow }
     })
@@ -673,6 +756,63 @@ function createFallbackCharacter() {
     characterModel.castShadow = SHADOW.meshCastShadow
     scene.add(characterModel)
     if (animLabel) animLabel.textContent = 'Fallback capsule'
+}
+
+// ─────────────────────────────────────────
+// CITY LOADING (glTF)
+// ─────────────────────────────────────────
+let cityModel = null
+
+async function loadCity() {
+    const loader = new GLTFLoader()
+    try {
+        const gltf = await new Promise((resolve, reject) => {
+            loader.load('./map/scene.gltf', resolve, undefined, reject)
+        })
+
+        cityModel = gltf.scene
+        cityModel.scale.setScalar(0.5)
+
+        cityModel.traverse(c => {
+            if (!c.isMesh) return
+            c.castShadow = false
+            c.receiveShadow = false
+            // Save GPU memory — city has 14 textures
+            if (c.material.map) {
+                c.material.map.minFilter = THREE.LinearFilter
+                c.material.map.generateMipmaps = false
+            }
+        })
+
+        scene.add(cityModel)
+
+        // Build physics from the actual mesh geometry
+        buildCityCollider(cityModel)
+
+        console.log('[city] loaded successfully')
+        return true
+    } catch (err) {
+        console.warn('[city] glTF failed to load', err)
+        return false
+    }
+}
+
+// ─────────────────────────────────────────
+// AUTO SPAWN — reads city bounding box and
+// places the character at the map centre,
+// just above the lowest ground point.
+// ─────────────────────────────────────────
+function autoSpawn(model) {
+    const box = new THREE.Box3().setFromObject(model)
+    const center = box.getCenter(new THREE.Vector3())
+    const groundY = box.min.y
+
+    const spawnY = groundY + 90.0
+    characterBody.setTranslation({ x: center.x, y: spawnY, z: center.z }, true)
+    characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+
+    console.log(`[spawn] center x:${center.x.toFixed(2)} y:${spawnY.toFixed(2)} z:${center.z.toFixed(2)}`)
+    console.log(`[city]  bounds min:`, box.min, 'max:', box.max)
 }
 
 // ─────────────────────────────────────────
@@ -775,6 +915,10 @@ function tick() {
     }
 
     if (mixer) mixer.update(delta)
+    
+    // Performance monitoring (uncomment to debug):
+    // console.log(`Triangles: ${renderer.info.render.triangles}, Materials: ${renderer.info.materials}`)
+    
     renderer.render(scene, camera)
 }
 
@@ -784,9 +928,14 @@ function tick() {
 async function init() {
     setLoading(15)
     await initPhysics()
+    setLoading(30)
+    await loadCity()
     setLoading(50)
     await loadCharacter()
     setLoading(100)
+
+    // Position character at city centre, above actual ground level
+    if (cityModel) autoSpawn(cityModel)
 
     // Seed interpolation so the model doesn't snap from the origin on frame 1.
     const p = characterBody.translation()
