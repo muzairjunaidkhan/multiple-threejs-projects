@@ -21,6 +21,7 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import RAPIER from '@dimforge/rapier3d-compat'
 import GUI from 'lil-gui'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 // ─────────────────────────────────────────
 // TUNING CONSTANTS
@@ -30,10 +31,9 @@ const MAX_SUBSTEPS = 4                 // clamp catch-up steps after a stall
 
 const GRAVITY = -24                    // m/s² (snappier than real 9.81)
 
-// Capsule dimensions. CAPSULE_BOTTOM = distance from body centre to the feet.
-const CAPSULE_RADIUS = 0.3
+const CAPSULE_RADIUS = 0.18        // slimmer — fits through narrower doors
 const CAPSULE_HALF_HEIGHT = 0.45
-const CAPSULE_BOTTOM = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS   // 0.75
+const CAPSULE_BOTTOM = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS   // 0.63
 
 // Ground ray: start just below the body centre (still inside the capsule) and
 // cast straight down, excluding the character's own collider so it can't
@@ -396,10 +396,15 @@ const MIN_COLLIDER_SIZE = 1.0   // units — tweak if small props need collision
 function buildCityCollider(model) {
     const vertices = []
     const indices = []
-    let vertexOffset = 0
+    const vertexMap = new Map()
 
     model.traverse(c => {
         if (!c.isMesh) return
+        if (!c.visible) return                    // ← skip hidden (clouds etc.)
+        if (c.userData.isMerged) return           // ← skip merged duplicates
+
+        // Update matrix BEFORE size check to ensure world-space dimensions are accurate
+        c.updateWorldMatrix(true, false)
 
         // Skip tiny decorative props
         const box = new THREE.Box3().setFromObject(c)
@@ -408,27 +413,31 @@ function buildCityCollider(model) {
 
         const geom = c.geometry
         const position = geom.attributes.position
-        c.updateWorldMatrix(true, false)
         const matrix = c.matrixWorld
 
         const v = new THREE.Vector3()
-        for (let i = 0; i < position.count; i++) {
-            v.set(position.getX(i), position.getY(i), position.getZ(i))
-                .applyMatrix4(matrix)
+
+        // Helper to get or create vertex index with position deduplication
+        const getVertexIndex = (i) => {
+            v.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(matrix)
+            const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
+            if (vertexMap.has(key)) return vertexMap.get(key)
+            
+            const idx = vertices.length / 3
             vertices.push(v.x, v.y, v.z)
+            vertexMap.set(key, idx)
+            return idx
         }
 
         if (geom.index) {
             for (let i = 0; i < geom.index.count; i++) {
-                indices.push(geom.index.array[i] + vertexOffset)
+                indices.push(getVertexIndex(geom.index.array[i]))
             }
         } else {
             for (let i = 0; i < position.count; i++) {
-                indices.push(i + vertexOffset)
+                indices.push(getVertexIndex(i))
             }
         }
-
-        vertexOffset += position.count
     })
 
     const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
@@ -440,7 +449,7 @@ function buildCityCollider(model) {
         cityBody
     )
 
-    console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} verts, ${(indices.length / 3).toLocaleString()} tris`)
+    console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} unique verts, ${(indices.length / 3).toLocaleString()} tris`)
 }
 
 // ─────────────────────────────────────────
@@ -737,6 +746,17 @@ function createFallbackCharacter() {
 // ─────────────────────────────────────────
 let cityModel = null
 
+const hideableGroups = {
+    clouds: { objects: cloudObjects, label: 'SM_Env_Cloud_*' },
+    // extend here if you want to toggle other groups later
+}
+
+// Name-prefix → group bucket for toggling
+const HIDEABLE_PREFIXES = [
+    { prefix: 'SM_Env_Cloud', group: cloudObjects },
+    // e.g. { prefix: 'SM_Env_Cactus', group: cactusObjects } if you add one
+]
+
 async function loadCity() {
     const loader = new GLTFLoader()
     try {
@@ -746,42 +766,138 @@ async function loadCity() {
 
         cityModel = gltf.scene
         cityModel.scale.setScalar(0.5)
+        cityModel.updateWorldMatrix(true, false)
+        const invModelMatrix = cityModel.matrixWorld.clone().invert()
+
+        // ── Traversal: categorise every object ────────────────────────────
+        // Buckets for geometry merging: materialKey → { geometries[], material }
+        const mergeBuckets = new Map()
+
+        // Stats for the before/after log
+        const stats = {
+            total: 0, meshes: 0, hidden: 0,
+            buckets: {}     // materialKey → count
+        }
 
         cityModel.traverse(c => {
-            // Hide cloud objects — they're named in the glTF scene graph
-            console.log('c.name', c.name)
-            if (c.name && (
-                c.name.toLowerCase().includes('cloud') ||
-                c.name.toLowerCase().includes('sky')
-            )) {
-                cloudObjects.push(c)
-                c.visible = false      // hidden by default
-                return
+            stats.total++
+
+            // ── Hideable groups (clouds, sky, etc.) ───────────────────────
+            const nameLC = c.name ? c.name.toLowerCase() : ''
+            let wasHidden = false
+            for (const { prefix, group } of HIDEABLE_PREFIXES) {
+                if (c.name && c.name.startsWith(prefix)) {
+                    group.push(c)
+                    c.visible = false
+                    wasHidden = true
+                    stats.hidden++
+                    break
+                }
             }
+            if (wasHidden) return   // skip further processing for hidden objects
 
             if (!c.isMesh) return
+            stats.meshes++
+
             c.castShadow = false
             c.receiveShadow = false
-            // Save GPU memory — city has 14 textures
-            if (c.material.map) {
+
+            // Texture memory optimisation
+            if (c.material && c.material.map) {
                 c.material.map.minFilter = THREE.LinearFilter
                 c.material.map.generateMipmaps = false
             }
+
+            // ── Geometry merge bucketing ───────────────────────────────────
+            // Key = material uuid so only meshes sharing the exact same
+            // material instance get merged (safe — no cross-material batching).
+            const mat = Array.isArray(c.material) ? c.material[0] : c.material
+            if (!mat) return
+
+            const key = mat.uuid
+            if (!mergeBuckets.has(key)) {
+                mergeBuckets.set(key, { geometries: [], material: mat, name: mat.name || key.slice(0, 8) })
+                stats.buckets[mat.name || key.slice(0, 8)] = 0
+            }
+
+            // We need geometry local to cityModel for merging
+            c.updateWorldMatrix(true, false)
+            const localMatrix = c.matrixWorld.clone().premultiply(invModelMatrix)
+            const cloned = c.geometry.clone().applyMatrix4(localMatrix)
+            mergeBuckets.get(key).geometries.push(cloned)
+            stats.buckets[mat.name || key.slice(0, 8)]++
+
+            // Hide originals — merged mesh will replace them
+            c.visible = false
         })
+
+        // ── BEFORE stats ───────────────────────────────────────────────────
+        console.group('[city] Scene traversal summary — BEFORE merge')
+        console.log(`  Total objects : ${stats.total}`)
+        console.log(`  Meshes        : ${stats.meshes}`)
+        console.log(`  Hidden (clouds/sky): ${stats.hidden}`)
+        console.log(`  Draw-call buckets by material:`)
+        for (const [matName, count] of Object.entries(stats.buckets)) {
+            console.log(`    ${matName.padEnd(48)} × ${count} meshes`)
+        }
+
+        console.log(`  Estimated draw calls BEFORE: ~${stats.meshes}`)
+        console.groupEnd()
+
+        // ── Merge each bucket into a single mesh ───────────────────────────
+        let mergedDrawCalls = 0
+        let mergedTrisBefore = 0
+        let mergedTrisAfter = 0
+
+        for (const [, { geometries, material, name }] of mergeBuckets) {
+            if (geometries.length === 0) continue
+
+            // Count tris before (sum of all individual meshes in this bucket)
+            geometries.forEach(g => {
+                mergedTrisBefore += g.index
+                    ? g.index.count / 3
+                    : g.attributes.position.count / 3
+            })
+
+            try {
+                const merged = mergeGeometries(geometries, false)
+
+                if (!merged) { console.warn(`[merge] failed for bucket "${name}"`); continue }
+
+                const mesh = new THREE.Mesh(merged, material)
+                mesh.name = `__merged_${name}`
+                mesh.frustumCulled = true   // always leave this ON
+                cityModel.add(mesh)
+                mergedDrawCalls++
+
+                mergedTrisAfter += merged.index
+                    ? merged.index.count / 3
+                    : merged.attributes.position.count / 3
+            } catch (err) {
+                console.warn(`[merge] exception in bucket "${name}"`, err)
+            }
+        }
 
         scene.add(cityModel)
 
-        // Build physics from the actual mesh geometry
-        buildCityCollider(cityModel)
+        // ── AFTER stats ────────────────────────────────────────────────────
+        console.group('[city] Scene traversal summary — AFTER merge')
+        console.log(`  Merged draw calls : ${mergedDrawCalls}  (was ~${stats.meshes})`)
+        console.log(`  Draw call reduction: ${(((stats.meshes - mergedDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
+        console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k — difference = index vs position counts)`)
+        console.log(`  Hidden objects     : ${stats.hidden}  (clouds OFF by default)`)
+        console.groupEnd()
 
+        buildCityCollider(cityModel)
+        
         console.log('[city] loaded successfully')
         return true
+
     } catch (err) {
         console.warn('[city] glTF failed to load', err)
         return false
     }
 }
-
 // ─────────────────────────────────────────
 // AUTO SPAWN — reads city bounding box and
 // places the character at the map centre,
@@ -952,6 +1068,17 @@ async function init() {
     setLoading(50)
     await loadCharacter()
     setLoading(100)
+
+    // ── Frustum cull audit ─────────────────────────────────────────────────
+    let cullingViolations = 0
+    cityModel && cityModel.traverse(c => {
+        if (c.isMesh && c.frustumCulled === false) {
+            console.warn(`[frustumCull] frustumCulled=false on: ${c.name}`)
+            cullingViolations++
+        }
+    })
+    if (cullingViolations === 0) console.log('[frustumCull] ✓ all meshes have frustumCulled=true')
+    else console.warn(`[frustumCull] ✗ ${cullingViolations} meshes have frustumCulled disabled — fix these`)
 
     // Position character at city centre, above actual ground level
     if (cityModel) autoSpawn(cityModel)
