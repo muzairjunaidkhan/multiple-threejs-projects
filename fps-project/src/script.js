@@ -26,7 +26,7 @@ import GUI from 'lil-gui'
 // TUNING CONSTANTS
 // ─────────────────────────────────────────
 const FIXED_TIME_STEP = 1 / 60        // physics runs at a fixed 60 Hz
-const MAX_SUBSTEPS = 5                 // clamp catch-up steps after a stall
+const MAX_SUBSTEPS = 4                 // clamp catch-up steps after a stall
 
 const GRAVITY = -24                    // m/s² (snappier than real 9.81)
 
@@ -60,21 +60,23 @@ const SPEED = {
     runEnter: 3.6,     // walk → run
     runExit: 3.0,      // run  → walk
 }
+const cloudObjects = []   // filled during loadCity(), toggled by GUI
 
-// ─────────────────────────────────────────
-// LEVEL DEFINITION
-// ─────────────────────────────────────────
-const LEVEL_PLATFORMS = [
-    { x: -5, y: 0.8, z: -5, w: 4, h: 0.4, d: 4 },
-    { x: 5, y: 2, z: -5, w: 4, h: 0.4, d: 4 },
-    { x: 0, y: 0.6, z: 5, w: 6, h: 0.4, d: 2 },
-    { x: -8, y: 1.2, z: 0, w: 3, h: 0.4, d: 3 },
-]
-const LEVEL_BOXES = [
-    { x: 3, y: 0.5, z: 0, w: 1, h: 1, d: 1 },
-    { x: -3, y: 0.5, z: 2, w: 1, h: 1, d: 1 },
-    { x: 0, y: 1, z: -2, w: 1, h: 2, d: 1, color: 0x3a3a4a },
-]
+
+// // ─────────────────────────────────────────
+// // LEVEL DEFINITION
+// // ─────────────────────────────────────────
+// const LEVEL_PLATFORMS = [
+//     { x: -5, y: 0.8, z: -5, w: 4, h: 0.4, d: 4 },
+//     { x: 5, y: 2, z: -5, w: 4, h: 0.4, d: 4 },
+//     { x: 0, y: 0.6, z: 5, w: 6, h: 0.4, d: 2 },
+//     { x: -8, y: 1.2, z: 0, w: 3, h: 0.4, d: 3 },
+// ]
+// const LEVEL_BOXES = [
+//     { x: 3, y: 0.5, z: 0, w: 1, h: 1, d: 1 },
+//     { x: -3, y: 0.5, z: 2, w: 1, h: 1, d: 1 },
+//     { x: 0, y: 1, z: -2, w: 1, h: 2, d: 1, color: 0x3a3a4a },
+// ]
 
 const SPAWN = { x: 0, y: 1.5, z: 0 }
 
@@ -348,47 +350,19 @@ sf.add(SHADOW, 'meshReceiveShadow').onChange(v => {
     })
 }).name('Mesh Receive')
 
+const SCENE = { showClouds: false }   // default OFF
+
+const scf = gui.addFolder('Scene')
+scf.add(SCENE, 'showClouds').name('Show Clouds').onChange(v => {
+    cloudObjects.forEach(c => { c.visible = v })
+})
+
 // ─────────────────────────────────────────
 // PHYSICS WORLD
 // ─────────────────────────────────────────
 let world = null
 let characterBody = null
 let characterCollider = null   // excluded from the ground raycast
-
-// async function initPhysics() {
-//     await RAPIER.init()
-//     world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 })
-//     world.timestep = FIXED_TIME_STEP
-
-//     // Ground (large static slab centred at y=0; top surface at y≈0.05)
-//     const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-//     world.createCollider(RAPIER.ColliderDesc.cuboid(30, 0.05, 30), groundBody)
-
-//     LEVEL_PLATFORMS.forEach(p => addStaticBox(p.x, p.y, p.z, p.w / 2, p.h / 2, p.d / 2))
-//     LEVEL_BOXES.forEach(b => addStaticBox(b.x, b.y, b.z, b.w / 2, b.h / 2, b.d / 2))
-
-//     // Character: dynamic capsule, rotation locked so it never tips over.
-//     // No linear damping — air momentum is preserved for natural jump arcs;
-//     // ground velocity is set explicitly every step so damping is irrelevant there.
-//     characterBody = world.createRigidBody(
-//         RAPIER.RigidBodyDesc.dynamic()
-//             .setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
-//             .lockRotations()
-//             .setLinearDamping(0)
-//     )
-
-//     characterCollider = world.createCollider(
-//         RAPIER.ColliderDesc.capsule(CAPSULE_HALF_HEIGHT, CAPSULE_RADIUS)
-//             .setFriction(0.0)
-//             .setRestitution(0.0),
-//         characterBody
-//     )
-// }
-
-// function addStaticBox(x, y, z, hw, hh, hd) {
-//     const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z))
-//     world.createCollider(RAPIER.ColliderDesc.cuboid(hw, hh, hd), b)
-// }
 
 async function initPhysics() {
     await RAPIER.init()
@@ -724,7 +698,7 @@ async function loadCharacter() {
                 clip.name = name
                 makeInPlace(clip)            // remove baked-in root motion
                 const action = mixer.clipAction(clip)
-                
+
                 // Determine if this is an emote (one-shot) or locomotion (loop)
                 const isEmote = ['Wave', 'Dance', 'Celebrate', 'Cry'].includes(name)
                 if (isEmote || name === 'Jump') {
@@ -774,6 +748,17 @@ async function loadCity() {
         cityModel.scale.setScalar(0.5)
 
         cityModel.traverse(c => {
+            // Hide cloud objects — they're named in the glTF scene graph
+            console.log('c.name', c.name)
+            if (c.name && (
+                c.name.toLowerCase().includes('cloud') ||
+                c.name.toLowerCase().includes('sky')
+            )) {
+                cloudObjects.push(c)
+                c.visible = false      // hidden by default
+                return
+            }
+
             if (!c.isMesh) return
             c.castShadow = false
             c.receiveShadow = false
@@ -844,6 +829,39 @@ function syncCamera(charPos) {
 }
 
 // ─────────────────────────────────────────
+// PERFORMANCE MONITOR (lightweight, no deps)
+// ─────────────────────────────────────────
+const perfPanel = document.createElement('div')
+perfPanel.style.cssText = `
+    position:fixed;bottom:8px;right:8px;
+    background:rgba(0,0,0,0.6);color:#0f0;
+    font:11px/1.5 monospace;padding:6px 10px;
+    border-radius:4px;pointer-events:none;z-index:300;`
+document.body.appendChild(perfPanel)
+
+let perfFrameCount = 0
+let perfAccTime = 0
+let perfLastTime = performance.now()
+
+function updatePerfPanel(delta) {
+    perfFrameCount++
+    perfAccTime += delta
+    if (perfFrameCount >= 60) {
+        const fps = Math.round(perfFrameCount / perfAccTime)
+        const ms = ((perfAccTime / perfFrameCount) * 1000).toFixed(1)
+        const info = renderer.info
+        perfPanel.innerHTML =
+            `FPS: ${fps}  |  ${ms} ms<br>` +
+            `Tris: ${(info.render.triangles / 1000).toFixed(0)}k<br>` +
+            `Draws: ${info.render.calls}<br>` +
+            `Geoms: ${info.memory.geometries}  Tex: ${info.memory.textures}`
+        perfFrameCount = 0
+        perfAccTime = 0
+    }
+}
+
+
+// ─────────────────────────────────────────
 // GAME LOOP
 //
 // Physics steps at a fixed rate inside an accumulator; the visual position is
@@ -888,6 +906,7 @@ function tick() {
     requestAnimationFrame(tick)
     const delta = Math.min(clock.getDelta(), 0.1)
 
+    updatePerfPanel(delta)
     if (world && characterBody) {
         stepPhysics(delta)
 
@@ -915,10 +934,10 @@ function tick() {
     }
 
     if (mixer) mixer.update(delta)
-    
+
     // Performance monitoring (uncomment to debug):
     // console.log(`Triangles: ${renderer.info.render.triangles}, Materials: ${renderer.info.materials}`)
-    
+
     renderer.render(scene, camera)
 }
 
