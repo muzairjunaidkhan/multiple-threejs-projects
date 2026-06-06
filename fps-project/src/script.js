@@ -44,7 +44,7 @@ const RAY_LENGTH = CAPSULE_BOTTOM + 0.15             // 0.90
 
 // Movement
 const WALK_SPEED = 2.2
-const RUN_SPEED = 5.0
+const RUN_SPEED = 4.5
 const JUMP_SPEED = 7.0                 // initial upward velocity on jump
 const AIR_CONTROL = 0.12               // 0 = no air steering, 1 = full instant
 const COYOTE_TIME = 0.10               // grace to still jump just after leaving ground
@@ -62,21 +62,6 @@ const SPEED = {
 }
 const cloudObjects = []   // filled during loadCity(), toggled by GUI
 
-
-// // ─────────────────────────────────────────
-// // LEVEL DEFINITION
-// // ─────────────────────────────────────────
-// const LEVEL_PLATFORMS = [
-//     { x: -5, y: 0.8, z: -5, w: 4, h: 0.4, d: 4 },
-//     { x: 5, y: 2, z: -5, w: 4, h: 0.4, d: 4 },
-//     { x: 0, y: 0.6, z: 5, w: 6, h: 0.4, d: 2 },
-//     { x: -8, y: 1.2, z: 0, w: 3, h: 0.4, d: 3 },
-// ]
-// const LEVEL_BOXES = [
-//     { x: 3, y: 0.5, z: 0, w: 1, h: 1, d: 1 },
-//     { x: -3, y: 0.5, z: 2, w: 1, h: 1, d: 1 },
-//     { x: 0, y: 1, z: -2, w: 1, h: 2, d: 1, color: 0x3a3a4a },
-// ]
 
 const SPAWN = { x: 0, y: 1.5, z: 0 }
 
@@ -236,43 +221,6 @@ sunLight.shadow.camera.top = 20
 sunLight.shadow.camera.bottom = -20
 sunLight.shadow.bias = -0.0005
 scene.add(sunLight)
-
-// ─────────────────────────────────────────
-// WORLD GEOMETRY (visuals)
-// ─────────────────────────────────────────
-// const groundMesh = new THREE.Mesh(
-//     new THREE.PlaneGeometry(60, 60),
-//     new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
-// )
-// groundMesh.rotation.x = -Math.PI / 2
-// groundMesh.receiveShadow = SHADOW.meshReceiveShadow
-// scene.add(groundMesh)
-
-// const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
-// grid.position.y = 0.002
-// scene.add(grid)
-
-// const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
-// function makePlatform(p) {
-//     const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
-//     m.position.set(p.x, p.y, p.z)
-//     m.castShadow = SHADOW.meshCastShadow
-//     m.receiveShadow = SHADOW.meshReceiveShadow
-//     scene.add(m)
-// }
-// LEVEL_PLATFORMS.forEach(makePlatform)
-
-// function makeBox(b) {
-//     const m = new THREE.Mesh(
-//         new THREE.BoxGeometry(b.w, b.h, b.d),
-//         new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
-//     )
-//     m.position.set(b.x, b.y, b.z)
-//     m.castShadow = SHADOW.meshCastShadow
-//     m.receiveShadow = SHADOW.meshReceiveShadow
-//     scene.add(m)
-// }
-// LEVEL_BOXES.forEach(makeBox)
 
 // ─────────────────────────────────────────
 // CROSSHAIR (visible only while pointer is locked)
