@@ -18,21 +18,22 @@
 
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import RAPIER from '@dimforge/rapier3d-compat'
 import GUI from 'lil-gui'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 // ─────────────────────────────────────────
 // TUNING CONSTANTS
 // ─────────────────────────────────────────
 const FIXED_TIME_STEP = 1 / 60        // physics runs at a fixed 60 Hz
-const MAX_SUBSTEPS = 5                 // clamp catch-up steps after a stall
+const MAX_SUBSTEPS = 4                 // clamp catch-up steps after a stall
 
 const GRAVITY = -24                    // m/s² (snappier than real 9.81)
 
-// Capsule dimensions. CAPSULE_BOTTOM = distance from body centre to the feet.
-const CAPSULE_RADIUS = 0.3
-const CAPSULE_HALF_HEIGHT = 0.45
-const CAPSULE_BOTTOM = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS   // 0.75
+const CAPSULE_RADIUS = 0.16        // slimmer — fits through narrower doors
+const CAPSULE_HALF_HEIGHT = 0.32
+const CAPSULE_BOTTOM = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS   // 0.63
 
 // Ground ray: start just below the body centre (still inside the capsule) and
 // cast straight down, excluding the character's own collider so it can't
@@ -44,7 +45,7 @@ const RAY_LENGTH = CAPSULE_BOTTOM + 0.15             // 0.90
 // Movement
 const WALK_SPEED = 2.2
 const RUN_SPEED = 5.0
-const JUMP_SPEED = 8.0                 // initial upward velocity on jump
+const JUMP_SPEED = 7.0                 // initial upward velocity on jump
 const AIR_CONTROL = 0.12               // 0 = no air steering, 1 = full instant
 const COYOTE_TIME = 0.10               // grace to still jump just after leaving ground
 const JUMP_BUFFER = 0.12               // remember a jump press made just before landing
@@ -59,21 +60,23 @@ const SPEED = {
     runEnter: 3.6,     // walk → run
     runExit: 3.0,      // run  → walk
 }
+const cloudObjects = []   // filled during loadCity(), toggled by GUI
 
-// ─────────────────────────────────────────
-// LEVEL DEFINITION
-// ─────────────────────────────────────────
-const LEVEL_PLATFORMS = [
-    { x: -5, y: 0.8, z: -5, w: 4, h: 0.4, d: 4 },
-    { x: 5, y: 2, z: -5, w: 4, h: 0.4, d: 4 },
-    { x: 0, y: 0.6, z: 5, w: 6, h: 0.4, d: 2 },
-    { x: -8, y: 1.2, z: 0, w: 3, h: 0.4, d: 3 },
-]
-const LEVEL_BOXES = [
-    { x: 3, y: 0.5, z: 0, w: 1, h: 1, d: 1 },
-    { x: -3, y: 0.5, z: 2, w: 1, h: 1, d: 1 },
-    { x: 0, y: 1, z: -2, w: 1, h: 2, d: 1, color: 0x3a3a4a },
-]
+
+// // ─────────────────────────────────────────
+// // LEVEL DEFINITION
+// // ─────────────────────────────────────────
+// const LEVEL_PLATFORMS = [
+//     { x: -5, y: 0.8, z: -5, w: 4, h: 0.4, d: 4 },
+//     { x: 5, y: 2, z: -5, w: 4, h: 0.4, d: 4 },
+//     { x: 0, y: 0.6, z: 5, w: 6, h: 0.4, d: 2 },
+//     { x: -8, y: 1.2, z: 0, w: 3, h: 0.4, d: 3 },
+// ]
+// const LEVEL_BOXES = [
+//     { x: 3, y: 0.5, z: 0, w: 1, h: 1, d: 1 },
+//     { x: -3, y: 0.5, z: 2, w: 1, h: 1, d: 1 },
+//     { x: 0, y: 1, z: -2, w: 1, h: 2, d: 1, color: 0x3a3a4a },
+// ]
 
 const SPAWN = { x: 0, y: 1.5, z: 0 }
 
@@ -90,16 +93,19 @@ const setLoading = (pct) => { if (loadingBar) loadingBar.style.width = `${pct}%`
 // ─────────────────────────────────────────
 // SCENE
 // ─────────────────────────────────────────
+// const scene = new THREE.Scene()
+// scene.background = new THREE.Color(0x1a1a2e)
+// scene.fog = new THREE.FogExp2(0x1a1a2e, 0.04)
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x1a1a2e)
-scene.fog = new THREE.FogExp2(0x1a1a2e, 0.04)
+scene.background = new THREE.Color(0xc9a96e)   // desert sky tan
+scene.fog = new THREE.FogExp2(0xc9a96e, 0.012) // lighter, longer fog for open desert
 
 // ─────────────────────────────────────────
 // CAMERA (orbiting third-person)
 // ─────────────────────────────────────────
 const CAM = {
-    distance: 4.5,
-    height: 1.4,
+    distance: 1.5,
+    height: 0.5,
     yawSensitivity: 0.0035,
     pitchSensitivity: 0.003,
     fov: 70,
@@ -110,13 +116,108 @@ let camYaw = 0, targetYaw = 0
 let camPitch = 0.4, targetPitch = 0.4
 
 // ─────────────────────────────────────────
+// SHADOW SETTINGS (performance tuning)
+// ─────────────────────────────────────────
+const SHADOW = {
+    enabled: false,
+    lightCastShadow: false,
+    meshCastShadow: false,
+    meshReceiveShadow: false,
+}
+
+// ─────────────────────────────────────────
 // RENDERER
 // ─────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.shadowMap.enabled = true
+renderer.shadowMap.enabled = SHADOW.enabled
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+// ─────────────────────────────────────────
+// DEBUG HELPERS — capsule visualiser
+// ─────────────────────────────────────────
+const DEBUG = { showCapsule: false }
+
+let capsuleHelper = null
+
+function createCapsuleHelper() {
+    const group = new THREE.Group()
+
+    // ── Cylinder body (the straight middle section) ──
+    const bodyGeo = new THREE.CylinderGeometry(
+        CAPSULE_RADIUS, CAPSULE_RADIUS,
+        CAPSULE_HALF_HEIGHT * 2,
+        16, 1, true   // open-ended so hemisphere joins look clean
+    )
+    const wireMat = new THREE.MeshBasicMaterial({
+        color: 0x00ff88,
+        wireframe: true,
+        depthTest: false,   // always visible through walls
+        transparent: true,
+        opacity: 0.7,
+    })
+    group.add(new THREE.Mesh(bodyGeo, wireMat))
+
+    // ── Top hemisphere ──
+    const topGeo = new THREE.SphereGeometry(CAPSULE_RADIUS, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2)
+    const topHemi = new THREE.Mesh(topGeo, wireMat)
+    topHemi.position.y = CAPSULE_HALF_HEIGHT
+    group.add(topHemi)
+
+    // ── Bottom hemisphere ──
+    const botGeo = new THREE.SphereGeometry(CAPSULE_RADIUS, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)
+    const botHemi = new THREE.Mesh(botGeo, wireMat)
+    botHemi.position.y = -CAPSULE_HALF_HEIGHT
+    group.add(botHemi)
+
+    // ── Centre cross (shows exact physics origin) ──
+    const crossMat = new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false })
+    const crossSize = 0.15
+    const crossGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-crossSize, 0, 0),
+        new THREE.Vector3( crossSize, 0, 0),
+        new THREE.Vector3(0, -crossSize, 0),
+        new THREE.Vector3(0,  crossSize, 0),
+        new THREE.Vector3(0, 0, -crossSize),
+        new THREE.Vector3(0, 0,  crossSize),
+    ])
+    crossGeo.setIndex([0,1, 2,3, 4,5])
+    const cross = new THREE.LineSegments(crossGeo, crossMat)
+    group.add(cross)
+
+    // ── Foot marker (shows where ground ray starts) ──
+    const footMat = new THREE.LineBasicMaterial({ color: 0xffff00, depthTest: false })
+    const footGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-0.2, -CAPSULE_BOTTOM, 0),
+        new THREE.Vector3( 0.2, -CAPSULE_BOTTOM, 0),
+        new THREE.Vector3(0, -CAPSULE_BOTTOM, -0.2),
+        new THREE.Vector3(0, -CAPSULE_BOTTOM,  0.2),
+    ])
+    footGeo.setIndex([0,1, 2,3])
+    group.add(new THREE.LineSegments(footGeo, footMat))
+
+    // ── Ray visualiser (shows ground detection ray) ──
+    const rayMat = new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false })
+    const rayStart = -(CAPSULE_BOTTOM - RAY_ORIGIN_OFFSET)   // matches checkGround()
+    const rayEnd   = rayStart - RAY_LENGTH
+    const rayGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, rayStart, 0),
+        new THREE.Vector3(0, rayEnd,   0),
+    ])
+    group.add(new THREE.Line(rayGeo, rayMat))
+
+    group.visible = DEBUG.showCapsule
+    scene.add(group)
+    return group
+}
+
+function updateCapsuleHelper() {
+    if (!capsuleHelper || !characterBody) return
+    const p = characterBody.translation()
+    // Physics body centre → helper sits at exact body position
+    capsuleHelper.position.set(p.x, p.y, p.z)
+}
 
 // ─────────────────────────────────────────
 // LIGHTING
@@ -125,7 +226,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.45))
 
 const sunLight = new THREE.DirectionalLight(0xffeedd, 1.3)
 sunLight.position.set(8, 14, 6)
-sunLight.castShadow = true
+sunLight.castShadow = SHADOW.lightCastShadow
 sunLight.shadow.mapSize.set(2048, 2048)
 sunLight.shadow.camera.near = 0.5
 sunLight.shadow.camera.far = 50
@@ -139,39 +240,39 @@ scene.add(sunLight)
 // ─────────────────────────────────────────
 // WORLD GEOMETRY (visuals)
 // ─────────────────────────────────────────
-const groundMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 60),
-    new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
-)
-groundMesh.rotation.x = -Math.PI / 2
-groundMesh.receiveShadow = true
-scene.add(groundMesh)
+// const groundMesh = new THREE.Mesh(
+//     new THREE.PlaneGeometry(60, 60),
+//     new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
+// )
+// groundMesh.rotation.x = -Math.PI / 2
+// groundMesh.receiveShadow = SHADOW.meshReceiveShadow
+// scene.add(groundMesh)
 
-const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
-grid.position.y = 0.002
-scene.add(grid)
+// const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
+// grid.position.y = 0.002
+// scene.add(grid)
 
-const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
-function makePlatform(p) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
-    m.position.set(p.x, p.y, p.z)
-    m.castShadow = true
-    m.receiveShadow = true
-    scene.add(m)
-}
-LEVEL_PLATFORMS.forEach(makePlatform)
+// const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
+// function makePlatform(p) {
+//     const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
+//     m.position.set(p.x, p.y, p.z)
+//     m.castShadow = SHADOW.meshCastShadow
+//     m.receiveShadow = SHADOW.meshReceiveShadow
+//     scene.add(m)
+// }
+// LEVEL_PLATFORMS.forEach(makePlatform)
 
-function makeBox(b) {
-    const m = new THREE.Mesh(
-        new THREE.BoxGeometry(b.w, b.h, b.d),
-        new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
-    )
-    m.position.set(b.x, b.y, b.z)
-    m.castShadow = true
-    m.receiveShadow = true
-    scene.add(m)
-}
-LEVEL_BOXES.forEach(makeBox)
+// function makeBox(b) {
+//     const m = new THREE.Mesh(
+//         new THREE.BoxGeometry(b.w, b.h, b.d),
+//         new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
+//     )
+//     m.position.set(b.x, b.y, b.z)
+//     m.castShadow = SHADOW.meshCastShadow
+//     m.receiveShadow = SHADOW.meshReceiveShadow
+//     scene.add(m)
+// }
+// LEVEL_BOXES.forEach(makeBox)
 
 // ─────────────────────────────────────────
 // CROSSHAIR (visible only while pointer is locked)
@@ -192,15 +293,16 @@ document.body.appendChild(crosshair)
 // POINTER LOCK + MOUSE LOOK
 // ─────────────────────────────────────────
 let isLocked = false
-canvas.addEventListener('click', () => { if (!isLocked) canvas.requestPointerLock() })
+canvas.addEventListener('click', () => { if (!isLocked && !wheelOpen) canvas.requestPointerLock() })
 
 document.addEventListener('pointerlockchange', () => {
     isLocked = document.pointerLockElement === canvas
-    crosshair.style.display = isLocked ? 'block' : 'none'
+    // Show crosshair only when pointer is locked AND wheel is NOT open
+    crosshair.style.display = (isLocked && !wheelOpen) ? 'block' : 'none'
 })
 
 document.addEventListener('mousemove', (e) => {
-    if (!isLocked) return
+    if (!isLocked || wheelOpen) return
     targetYaw -= e.movementX * CAM.yawSensitivity
     targetPitch += e.movementY * CAM.pitchSensitivity
     targetPitch = THREE.MathUtils.clamp(targetPitch, 0.08, 1.4)
@@ -209,6 +311,51 @@ document.addEventListener('mousemove', (e) => {
 window.addEventListener('wheel', (e) => {
     CAM.distance = THREE.MathUtils.clamp(CAM.distance + e.deltaY * 0.01, 1.5, 14)
 }, { passive: true })
+
+// ─────────────────────────────────────────
+// EMOTE WHEEL UI
+// ─────────────────────────────────────────
+const wheelContainer = document.getElementById('emote-wheel')
+const wheelSegments = document.querySelectorAll('.wheel-segment')
+
+function openWheel() {
+    wheelOpen = true
+    wheelContainer.classList.remove('hidden')
+    if (isLocked) document.exitPointerLock()
+}
+
+function closeWheel() {
+    wheelOpen = false
+    wheelContainer.classList.add('hidden')
+    if (canvas && !isLocked) {
+        setTimeout(() => canvas.requestPointerLock(), 100)
+    }
+}
+
+function playEmote(emoteName) {
+    if (!actions[emoteName]) return
+    lastLocomotionState = currentState
+    const emoteDurations = { Wave: 1.0, Dance: 4.0, Celebrate: 2.8, Cry: 2.2 }
+    emotePlayTimer = emoteDurations[emoteName] || 1.5
+    isPlayingEmote = true
+    setState(emoteName)
+    closeWheel()
+}
+
+wheelSegments.forEach((segment) => {
+    segment.addEventListener('click', (e) => {
+        const emoteName = segment.dataset.emote
+        const stateName = emoteName.charAt(0).toUpperCase() + emoteName.slice(1)
+        playEmote(stateName)
+        e.stopPropagation()
+    })
+})
+
+document.addEventListener('click', (e) => {
+    if (wheelOpen && !wheelContainer.contains(e.target)) {
+        closeWheel()
+    }
+})
 
 // ─────────────────────────────────────────
 // INPUT
@@ -229,6 +376,15 @@ window.addEventListener('keydown', (e) => {
         case 'KeyA': case 'ArrowLeft': keys.left = true; break
         case 'KeyD': case 'ArrowRight': keys.right = true; break
         case 'ShiftLeft': case 'ShiftRight': keys.walk = true; break
+        case 'KeyV':
+            // Toggle emote wheel
+            if (wheelOpen) {
+                closeWheel()
+            } else {
+                openWheel()
+            }
+            e.preventDefault()
+            break
         case 'Space':
             e.preventDefault()
             jumpBufferTimer = JUMP_BUFFER   // buffer the press; consumed when grounded
@@ -254,12 +410,43 @@ window.addEventListener('keyup', (e) => {
 // ─────────────────────────────────────────
 const gui = new GUI({ title: 'Settings' })
 const cf = gui.addFolder('Camera')
-cf.add(CAM, 'distance', 1.5, 14, 0.1).name('Distance').listen()
+cf.add(CAM, 'distance', 0.5, 14, 0.1).name('Distance').listen()
 cf.add(CAM, 'height', 0.5, 3.0, 0.05).name('Look Height')
 cf.add(CAM, 'fov', 50, 110, 1).name('FOV').onChange(v => { camera.fov = v; camera.updateProjectionMatrix() })
 cf.add(CAM, 'yawSensitivity', 0.0005, 0.01, 0.0001).name('H Sensitivity')
 cf.add(CAM, 'pitchSensitivity', 0.0005, 0.01, 0.0001).name('V Sensitivity')
 cf.add(CAM, 'damping', 1, 25, 0.5).name('Cam Smoothing')
+
+const sf = gui.addFolder('Shadows')
+sf.add(SHADOW, 'enabled').onChange(v => {
+    renderer.shadowMap.enabled = v
+}).name('Enable Shadows')
+sf.add(SHADOW, 'lightCastShadow').onChange(v => {
+    sunLight.castShadow = v
+}).name('Sun Light')
+sf.add(SHADOW, 'meshCastShadow').onChange(v => {
+    scene.traverse(obj => {
+        if (obj.isMesh) obj.castShadow = v
+    })
+}).name('Mesh Cast')
+sf.add(SHADOW, 'meshReceiveShadow').onChange(v => {
+    scene.traverse(obj => {
+        if (obj.isMesh) obj.receiveShadow = v
+    })
+}).name('Mesh Receive')
+
+const SCENE = { showClouds: false }   // default OFF
+
+const scf = gui.addFolder('Scene')
+scf.add(SCENE, 'showClouds').name('Show Clouds').onChange(v => {
+    cloudObjects.forEach(c => { c.visible = v })
+})
+
+const dbf = gui.addFolder('Debug')
+dbf.add(DEBUG, 'showCapsule').name('Show Capsule').onChange(v => {
+    if (!capsuleHelper) capsuleHelper = createCapsuleHelper()
+    capsuleHelper.visible = v
+})
 
 // ─────────────────────────────────────────
 // PHYSICS WORLD
@@ -273,16 +460,8 @@ async function initPhysics() {
     world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 })
     world.timestep = FIXED_TIME_STEP
 
-    // Ground (large static slab centred at y=0; top surface at y≈0.05)
-    const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(RAPIER.ColliderDesc.cuboid(30, 0.05, 30), groundBody)
-
-    LEVEL_PLATFORMS.forEach(p => addStaticBox(p.x, p.y, p.z, p.w / 2, p.h / 2, p.d / 2))
-    LEVEL_BOXES.forEach(b => addStaticBox(b.x, b.y, b.z, b.w / 2, b.h / 2, b.d / 2))
-
-    // Character: dynamic capsule, rotation locked so it never tips over.
-    // No linear damping — air momentum is preserved for natural jump arcs;
-    // ground velocity is set explicitly every step so damping is irrelevant there.
+    // No ground slab here — trimesh from city model handles all collision.
+    // Character spawns high; autoSpawn() will reposition after city loads.
     characterBody = world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic()
             .setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
@@ -298,9 +477,70 @@ async function initPhysics() {
     )
 }
 
-function addStaticBox(x, y, z, hw, hh, hd) {
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z))
-    world.createCollider(RAPIER.ColliderDesc.cuboid(hw, hh, hd), b)
+// ─────────────────────────────────────────
+// TRIMESH COLLIDER — built from city geometry
+// Skips tiny props (bounding box < MIN_COLLIDER_SIZE) to keep
+// triangle count manageable for Rapier.
+// ─────────────────────────────────────────
+const MIN_COLLIDER_SIZE = 1.0   // units — tweak if small props need collision
+
+function buildCityCollider(model) {
+    const vertices = []
+    const indices = []
+    const vertexMap = new Map()
+
+    model.traverse(c => {
+        if (!c.isMesh) return
+        if (!c.visible) return                    // ← skip hidden (clouds etc.)
+        if (c.userData.isMerged) return           // ← skip merged duplicates
+
+        // Update matrix BEFORE size check to ensure world-space dimensions are accurate
+        c.updateWorldMatrix(true, false)
+
+        // Skip tiny decorative props
+        const box = new THREE.Box3().setFromObject(c)
+        const size = box.getSize(new THREE.Vector3())
+        if (Math.max(size.x, size.y, size.z) < MIN_COLLIDER_SIZE) return
+
+        const geom = c.geometry
+        const position = geom.attributes.position
+        const matrix = c.matrixWorld
+
+        const v = new THREE.Vector3()
+
+        // Helper to get or create vertex index with position deduplication
+        const getVertexIndex = (i) => {
+            v.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(matrix)
+            const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
+            if (vertexMap.has(key)) return vertexMap.get(key)
+            
+            const idx = vertices.length / 3
+            vertices.push(v.x, v.y, v.z)
+            vertexMap.set(key, idx)
+            return idx
+        }
+
+        if (geom.index) {
+            for (let i = 0; i < geom.index.count; i++) {
+                indices.push(getVertexIndex(geom.index.array[i]))
+            }
+        } else {
+            for (let i = 0; i < position.count; i++) {
+                indices.push(getVertexIndex(i))
+            }
+        }
+    })
+
+    const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(
+        RAPIER.ColliderDesc.trimesh(
+            new Float32Array(vertices),
+            new Uint32Array(indices)
+        ),
+        cityBody
+    )
+
+    console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} unique verts, ${(indices.length / 3).toLocaleString()} tris`)
 }
 
 // ─────────────────────────────────────────
@@ -345,6 +585,12 @@ let hasMoveInput = false    // intent flag, read by the animation FSM
 
 function updateMovement(dt) {
     if (!characterBody) return
+
+    // Suppress movement input while emote is playing
+    if (isPlayingEmote) {
+        characterBody.setLinvel({ x: 0, y: characterBody.linvel().y, z: 0 }, true)
+        return
+    }
 
     // Camera-relative movement basis (flattened onto the XZ plane).
     _yawQuat.setFromAxisAngle(_axisY, camYaw)
@@ -399,11 +645,19 @@ function updateMovement(dt) {
 let characterModel = null
 let mixer = null
 const actions = {}             // name -> AnimationAction
-let currentState = ''          // 'Idle' | 'Walk' | 'Run' | 'Jump'
+let currentState = ''          // 'Idle' | 'Walk' | 'Run' | 'Jump' | 'Wave' | 'Dance' | 'Celebrate' | 'Cry'
 let currentAction = null
 
 let smoothedSpeed = 0          // persistent, filtered horizontal speed
 let airborneTimer = 0          // seconds spent off the ground
+
+// ─────────────────────────────────────────
+// EMOTE WHEEL STATE
+// ─────────────────────────────────────────
+let wheelOpen = false          // whether emote wheel UI is visible
+let isPlayingEmote = false     // actively playing a one-shot emote animation
+let lastLocomotionState = 'Idle'  // restore to this state when emote finishes
+let emotePlayTimer = 0         // countdown timer for emote duration
 
 function setState(name) {
     if (currentState === name) return          // already playing → do nothing
@@ -446,6 +700,17 @@ function pickLocomotion() {
 function updateAnimation(dt) {
     if (!mixer || !characterBody) return
 
+    // Handle emote playback duration
+    if (isPlayingEmote) {
+        emotePlayTimer -= dt
+        if (emotePlayTimer <= 0) {
+            // Emote finished: return to last locomotion state
+            isPlayingEmote = false
+            setState(lastLocomotionState)
+        }
+        return  // skip locomotion state machine while emote plays
+    }
+
     const vel = characterBody.linvel()
     const horizontalSpeed = Math.hypot(vel.x, vel.z)
     smoothedSpeed = THREE.MathUtils.lerp(smoothedSpeed, horizontalSpeed, 0.25)
@@ -471,6 +736,11 @@ const ANIM_FILES = [
     { name: 'Jump', path: './animations/Jump.fbx' },
     { name: 'Run', path: './animations/Running.fbx' },
     { name: 'Walk', path: './animations/Walking.fbx' },
+    // Emote animations (one-shot)
+    { name: 'Wave', path: './animations/Waving.fbx' },
+    { name: 'Dance', path: './animations/Wave Hip Hop Dance.fbx' },
+    { name: 'Celebrate', path: './animations/Rallying.fbx' },
+    { name: 'Cry', path: './animations/Crying.fbx' },
 ]
 
 const loadFBX = (loader, path) =>
@@ -511,9 +781,9 @@ async function loadCharacter() {
     }
 
     characterModel = fbx
-    characterModel.scale.setScalar(0.01)          // FBX is in cm → metres
+    characterModel.scale.setScalar(0.005)          // FBX is in cm → metres
     characterModel.traverse(c => {
-        if (c.isMesh) { c.castShadow = true; c.receiveShadow = true }
+        if (c.isMesh) { c.castShadow = SHADOW.meshCastShadow; c.receiveShadow = SHADOW.meshReceiveShadow }
     })
     scene.add(characterModel)
     mixer = new THREE.AnimationMixer(characterModel)
@@ -528,7 +798,10 @@ async function loadCharacter() {
                 clip.name = name
                 makeInPlace(clip)            // remove baked-in root motion
                 const action = mixer.clipAction(clip)
-                if (name === 'Jump') {
+
+                // Determine if this is an emote (one-shot) or locomotion (loop)
+                const isEmote = ['Wave', 'Dance', 'Celebrate', 'Cry'].includes(name)
+                if (isEmote || name === 'Jump') {
                     action.loop = THREE.LoopOnce
                     action.clampWhenFinished = true
                 } else {
@@ -554,9 +827,185 @@ function createFallbackCharacter() {
         new THREE.CapsuleGeometry(CAPSULE_RADIUS, CAPSULE_HALF_HEIGHT * 2, 8, 16),
         new THREE.MeshStandardMaterial({ color: 0x7dd3fc })
     )
-    characterModel.castShadow = true
+    characterModel.castShadow = SHADOW.meshCastShadow
     scene.add(characterModel)
     if (animLabel) animLabel.textContent = 'Fallback capsule'
+}
+
+// ─────────────────────────────────────────
+// CITY LOADING (glTF)
+// ─────────────────────────────────────────
+let cityModel = null
+
+const hideableGroups = {
+    clouds: { objects: cloudObjects, label: 'SM_Env_Cloud_*' },
+    // extend here if you want to toggle other groups later
+}
+
+// Name-prefix → group bucket for toggling
+const HIDEABLE_PREFIXES = [
+    { prefix: 'SM_Env_Cloud', group: cloudObjects },
+    // e.g. { prefix: 'SM_Env_Cactus', group: cactusObjects } if you add one
+]
+
+async function loadCity() {
+    const loader = new GLTFLoader()
+    try {
+        const gltf = await new Promise((resolve, reject) => {
+            loader.load('./map/scene.gltf', resolve, undefined, reject)
+        })
+
+        cityModel = gltf.scene
+        cityModel.scale.setScalar(0.5)
+        cityModel.updateWorldMatrix(true, false)
+        const invModelMatrix = cityModel.matrixWorld.clone().invert()
+
+        // ── Traversal: categorise every object ────────────────────────────
+        // Buckets for geometry merging: materialKey → { geometries[], material }
+        const mergeBuckets = new Map()
+
+        // Stats for the before/after log
+        const stats = {
+            total: 0, meshes: 0, hidden: 0,
+            buckets: {}     // materialKey → count
+        }
+
+        cityModel.traverse(c => {
+            stats.total++
+
+            // ── Hideable groups (clouds, sky, etc.) ───────────────────────
+            const nameLC = c.name ? c.name.toLowerCase() : ''
+            let wasHidden = false
+            for (const { prefix, group } of HIDEABLE_PREFIXES) {
+                if (c.name && c.name.startsWith(prefix)) {
+                    group.push(c)
+                    c.visible = false
+                    wasHidden = true
+                    stats.hidden++
+                    break
+                }
+            }
+            if (wasHidden) return   // skip further processing for hidden objects
+
+            if (!c.isMesh) return
+            stats.meshes++
+
+            c.castShadow = false
+            c.receiveShadow = false
+
+            // Texture memory optimisation
+            if (c.material && c.material.map) {
+                c.material.map.minFilter = THREE.LinearFilter
+                c.material.map.generateMipmaps = false
+            }
+
+            // ── Geometry merge bucketing ───────────────────────────────────
+            // Key = material uuid so only meshes sharing the exact same
+            // material instance get merged (safe — no cross-material batching).
+            const mat = Array.isArray(c.material) ? c.material[0] : c.material
+            if (!mat) return
+
+            const key = mat.uuid
+            if (!mergeBuckets.has(key)) {
+                mergeBuckets.set(key, { geometries: [], material: mat, name: mat.name || key.slice(0, 8) })
+                stats.buckets[mat.name || key.slice(0, 8)] = 0
+            }
+
+            // We need geometry local to cityModel for merging
+            c.updateWorldMatrix(true, false)
+            const localMatrix = c.matrixWorld.clone().premultiply(invModelMatrix)
+            const cloned = c.geometry.clone().applyMatrix4(localMatrix)
+            mergeBuckets.get(key).geometries.push(cloned)
+            stats.buckets[mat.name || key.slice(0, 8)]++
+
+            // Hide originals — merged mesh will replace them
+            c.visible = false
+        })
+
+        // ── BEFORE stats ───────────────────────────────────────────────────
+        console.group('[city] Scene traversal summary — BEFORE merge')
+        console.log(`  Total objects : ${stats.total}`)
+        console.log(`  Meshes        : ${stats.meshes}`)
+        console.log(`  Hidden (clouds/sky): ${stats.hidden}`)
+        console.log(`  Draw-call buckets by material:`)
+        for (const [matName, count] of Object.entries(stats.buckets)) {
+            console.log(`    ${matName.padEnd(48)} × ${count} meshes`)
+        }
+
+        console.log(`  Estimated draw calls BEFORE: ~${stats.meshes}`)
+        console.groupEnd()
+
+        // ── Merge each bucket into a single mesh ───────────────────────────
+        let mergedDrawCalls = 0
+        let mergedTrisBefore = 0
+        let mergedTrisAfter = 0
+
+        for (const [, { geometries, material, name }] of mergeBuckets) {
+            if (geometries.length === 0) continue
+
+            // Count tris before (sum of all individual meshes in this bucket)
+            geometries.forEach(g => {
+                mergedTrisBefore += g.index
+                    ? g.index.count / 3
+                    : g.attributes.position.count / 3
+            })
+
+            try {
+                const merged = mergeGeometries(geometries, false)
+
+                if (!merged) { console.warn(`[merge] failed for bucket "${name}"`); continue }
+
+                const mesh = new THREE.Mesh(merged, material)
+                mesh.name = `__merged_${name}`
+                mesh.frustumCulled = true   // always leave this ON
+                cityModel.add(mesh)
+                mergedDrawCalls++
+
+                mergedTrisAfter += merged.index
+                    ? merged.index.count / 3
+                    : merged.attributes.position.count / 3
+            } catch (err) {
+                console.warn(`[merge] exception in bucket "${name}"`, err)
+            }
+        }
+
+        scene.add(cityModel)
+
+        // ── AFTER stats ────────────────────────────────────────────────────
+        console.group('[city] Scene traversal summary — AFTER merge')
+        console.log(`  Merged draw calls : ${mergedDrawCalls}  (was ~${stats.meshes})`)
+        console.log(`  Draw call reduction: ${(((stats.meshes - mergedDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
+        console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k — difference = index vs position counts)`)
+        console.log(`  Hidden objects     : ${stats.hidden}  (clouds OFF by default)`)
+        console.groupEnd()
+
+        buildCityCollider(cityModel)
+        
+        console.log('[city] loaded successfully')
+        return true
+
+    } catch (err) {
+        console.warn('[city] glTF failed to load', err)
+        return false
+    }
+}
+// ─────────────────────────────────────────
+// AUTO SPAWN — reads city bounding box and
+// places the character at the map centre,
+// just above the lowest ground point.
+// ─────────────────────────────────────────
+function autoSpawn(model) {
+    const box = new THREE.Box3().setFromObject(model)
+    const center = box.getCenter(new THREE.Vector3())
+    const groundY = box.min.y
+
+    const spawnY = groundY + 90.0
+    //position x is temparily set to the left remove it in futre when we have a proper spawn point
+    characterBody.setTranslation({ x: (center.x - 60), y: spawnY, z: center.z }, true)
+    characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+
+    console.log(`[spawn] center x:${center.x.toFixed(2)} y:${spawnY.toFixed(2)} z:${center.z.toFixed(2)}`)
+    console.log(`[city]  bounds min:`, box.min, 'max:', box.max)
 }
 
 // ─────────────────────────────────────────
@@ -586,6 +1035,39 @@ function syncCamera(charPos) {
     camera.position.copy(_camTarget).add(_camOffset)
     camera.lookAt(_camTarget)
 }
+
+// ─────────────────────────────────────────
+// PERFORMANCE MONITOR (lightweight, no deps)
+// ─────────────────────────────────────────
+const perfPanel = document.createElement('div')
+perfPanel.style.cssText = `
+    position:fixed;bottom:8px;right:8px;
+    background:rgba(0,0,0,0.6);color:#0f0;
+    font:11px/1.5 monospace;padding:6px 10px;
+    border-radius:4px;pointer-events:none;z-index:300;`
+document.body.appendChild(perfPanel)
+
+let perfFrameCount = 0
+let perfAccTime = 0
+let perfLastTime = performance.now()
+
+function updatePerfPanel(delta) {
+    perfFrameCount++
+    perfAccTime += delta
+    if (perfFrameCount >= 60) {
+        const fps = Math.round(perfFrameCount / perfAccTime)
+        const ms = ((perfAccTime / perfFrameCount) * 1000).toFixed(1)
+        const info = renderer.info
+        perfPanel.innerHTML =
+            `FPS: ${fps}  |  ${ms} ms<br>` +
+            `Tris: ${(info.render.triangles / 1000).toFixed(0)}k<br>` +
+            `Draws: ${info.render.calls}<br>` +
+            `Geoms: ${info.memory.geometries}  Tex: ${info.memory.textures}`
+        perfFrameCount = 0
+        perfAccTime = 0
+    }
+}
+
 
 // ─────────────────────────────────────────
 // GAME LOOP
@@ -632,6 +1114,7 @@ function tick() {
     requestAnimationFrame(tick)
     const delta = Math.min(clock.getDelta(), 0.1)
 
+    updatePerfPanel(delta)
     if (world && characterBody) {
         stepPhysics(delta)
 
@@ -642,6 +1125,8 @@ function tick() {
         if (characterModel) {
             // Body centre → feet: drop the model by CAPSULE_BOTTOM.
             characterModel.position.set(_smoothPos.x, _smoothPos.y - CAPSULE_BOTTOM, _smoothPos.z)
+
+            updateCapsuleHelper()
 
             // Face the horizontal movement direction.
             const vel = characterBody.linvel()
@@ -659,6 +1144,10 @@ function tick() {
     }
 
     if (mixer) mixer.update(delta)
+
+    // Performance monitoring (uncomment to debug):
+    // console.log(`Triangles: ${renderer.info.render.triangles}, Materials: ${renderer.info.materials}`)
+
     renderer.render(scene, camera)
 }
 
@@ -668,9 +1157,25 @@ function tick() {
 async function init() {
     setLoading(15)
     await initPhysics()
+    setLoading(30)
+    await loadCity()
     setLoading(50)
     await loadCharacter()
     setLoading(100)
+
+    // ── Frustum cull audit ─────────────────────────────────────────────────
+    let cullingViolations = 0
+    cityModel && cityModel.traverse(c => {
+        if (c.isMesh && c.frustumCulled === false) {
+            console.warn(`[frustumCull] frustumCulled=false on: ${c.name}`)
+            cullingViolations++
+        }
+    })
+    if (cullingViolations === 0) console.log('[frustumCull] ✓ all meshes have frustumCulled=true')
+    else console.warn(`[frustumCull] ✗ ${cullingViolations} meshes have frustumCulled disabled — fix these`)
+
+    // Position character at city centre, above actual ground level
+    if (cityModel) autoSpawn(cityModel)
 
     // Seed interpolation so the model doesn't snap from the origin on frame 1.
     const p = characterBody.translation()

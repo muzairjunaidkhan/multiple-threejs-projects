@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"c:\\\\Users\\\\muzai\\\\OneDrive\\\\Documents\\\\multiple-threejs\\\\fps-project\" ; cmd /c \"npm run dev\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node -c \"c:/Users/muzai/OneDrive/Documents/multiple-threejs/fps-project/src/script\\.js\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
