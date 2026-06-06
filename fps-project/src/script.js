@@ -110,12 +110,22 @@ let camYaw = 0, targetYaw = 0
 let camPitch = 0.4, targetPitch = 0.4
 
 // ─────────────────────────────────────────
+// SHADOW SETTINGS (performance tuning)
+// ─────────────────────────────────────────
+const SHADOW = {
+    enabled: false,
+    lightCastShadow: false,
+    meshCastShadow: false,
+    meshReceiveShadow: false,
+}
+
+// ─────────────────────────────────────────
 // RENDERER
 // ─────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.shadowMap.enabled = true
+renderer.shadowMap.enabled = SHADOW.enabled
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
 // ─────────────────────────────────────────
@@ -125,7 +135,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.45))
 
 const sunLight = new THREE.DirectionalLight(0xffeedd, 1.3)
 sunLight.position.set(8, 14, 6)
-sunLight.castShadow = true
+sunLight.castShadow = SHADOW.lightCastShadow
 sunLight.shadow.mapSize.set(2048, 2048)
 sunLight.shadow.camera.near = 0.5
 sunLight.shadow.camera.far = 50
@@ -144,7 +154,7 @@ const groundMesh = new THREE.Mesh(
     new THREE.MeshStandardMaterial({ color: 0x2d4a3e, roughness: 0.9 })
 )
 groundMesh.rotation.x = -Math.PI / 2
-groundMesh.receiveShadow = true
+groundMesh.receiveShadow = SHADOW.meshReceiveShadow
 scene.add(groundMesh)
 
 const grid = new THREE.GridHelper(60, 60, 0x3a5a4a, 0x2a4a3a)
@@ -155,8 +165,8 @@ const platformMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness:
 function makePlatform(p) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, p.h, p.d), platformMat)
     m.position.set(p.x, p.y, p.z)
-    m.castShadow = true
-    m.receiveShadow = true
+    m.castShadow = SHADOW.meshCastShadow
+    m.receiveShadow = SHADOW.meshReceiveShadow
     scene.add(m)
 }
 LEVEL_PLATFORMS.forEach(makePlatform)
@@ -167,8 +177,8 @@ function makeBox(b) {
         new THREE.MeshStandardMaterial({ color: b.color ?? 0x4a3020, roughness: 0.85 })
     )
     m.position.set(b.x, b.y, b.z)
-    m.castShadow = true
-    m.receiveShadow = true
+    m.castShadow = SHADOW.meshCastShadow
+    m.receiveShadow = SHADOW.meshReceiveShadow
     scene.add(m)
 }
 LEVEL_BOXES.forEach(makeBox)
@@ -315,6 +325,24 @@ cf.add(CAM, 'fov', 50, 110, 1).name('FOV').onChange(v => { camera.fov = v; camer
 cf.add(CAM, 'yawSensitivity', 0.0005, 0.01, 0.0001).name('H Sensitivity')
 cf.add(CAM, 'pitchSensitivity', 0.0005, 0.01, 0.0001).name('V Sensitivity')
 cf.add(CAM, 'damping', 1, 25, 0.5).name('Cam Smoothing')
+
+const sf = gui.addFolder('Shadows')
+sf.add(SHADOW, 'enabled').onChange(v => {
+    renderer.shadowMap.enabled = v
+}).name('Enable Shadows')
+sf.add(SHADOW, 'lightCastShadow').onChange(v => {
+    sunLight.castShadow = v
+}).name('Sun Light')
+sf.add(SHADOW, 'meshCastShadow').onChange(v => {
+    scene.traverse(obj => {
+        if (obj.isMesh) obj.castShadow = v
+    })
+}).name('Mesh Cast')
+sf.add(SHADOW, 'meshReceiveShadow').onChange(v => {
+    scene.traverse(obj => {
+        if (obj.isMesh) obj.receiveShadow = v
+    })
+}).name('Mesh Receive')
 
 // ─────────────────────────────────────────
 // PHYSICS WORLD
@@ -598,7 +626,7 @@ async function loadCharacter() {
     characterModel = fbx
     characterModel.scale.setScalar(0.01)          // FBX is in cm → metres
     characterModel.traverse(c => {
-        if (c.isMesh) { c.castShadow = true; c.receiveShadow = true }
+        if (c.isMesh) { c.castShadow = SHADOW.meshCastShadow; c.receiveShadow = SHADOW.meshReceiveShadow }
     })
     scene.add(characterModel)
     mixer = new THREE.AnimationMixer(characterModel)
@@ -642,7 +670,7 @@ function createFallbackCharacter() {
         new THREE.CapsuleGeometry(CAPSULE_RADIUS, CAPSULE_HALF_HEIGHT * 2, 8, 16),
         new THREE.MeshStandardMaterial({ color: 0x7dd3fc })
     )
-    characterModel.castShadow = true
+    characterModel.castShadow = SHADOW.meshCastShadow
     scene.add(characterModel)
     if (animLabel) animLabel.textContent = 'Fallback capsule'
 }
