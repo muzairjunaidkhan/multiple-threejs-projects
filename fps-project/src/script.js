@@ -430,66 +430,126 @@ async function initPhysics() {
 // Skips tiny props (bounding box < MIN_COLLIDER_SIZE) to keep
 // triangle count manageable for Rapier.
 // ─────────────────────────────────────────
-const MIN_COLLIDER_SIZE = 1.0   // units — tweak if small props need collision
+// ─────────────────────────────────────────
+// TRIMESH COLLIDER — built from pre-merge geometry arrays
+// collected during loadCity() traversal, before originals are hidden.
+// ─────────────────────────────────────────
+const MIN_COLLIDER_SIZE = 2.0   // world-space units after cityModel scale (0.5×)
 
-function buildCityCollider(model) {
-    const vertices = []
-    const indices = []
-    const vertexMap = new Map()
+const COLLIDER_SKIP_PREFIXES = [
+    'SM_Env_Grass_',
+    'SM_Env_DustPile_',
+    'SM_Env_Cactus_',
+    'SM_Prop_Bush_',
+    'SM_Prop_Rope_',
+    'SM_Prop_Curtain_',
+    'SM_Prop_Stick_',
+    'SM_Env_Train_Track_Straight_01_Dirt',
+    'SM_Env_Train_Track_Curve_01_Dirt',
+    'TriggerOpen',
+    // Props the player walks around, not on — add more as you identify them
+    'SM_Prop_Barrel_',
+    'SM_Prop_Chair_',
+    'SM_Prop_Lantern_',
+    'SM_Prop_Sign_',
+    'SM_Prop_Wagon_',
+    'SM_Env_Rock_S_',
+]
 
-    model.traverse(c => {
-        if (!c.isMesh) return
-        if (!c.visible) return                    // ← skip hidden (clouds etc.)
-        if (c.userData.isMerged) return           // ← skip merged duplicates
+const COLLIDER_SKIP_MATERIALS = [
+    'glass',
+    'water',
+    'light',
+    'melvin_was_here',
+    'chalojail',
+]
 
-        // Update matrix BEFORE size check to ensure world-space dimensions are accurate
-        c.updateWorldMatrix(true, false)
+// Called with raw arrays collected DURING loadCity() — not from the merged model.
+function buildCityColliderFromArrays(vertices, indices) {
+    console.log(`[physics] trimesh raw — ${(vertices.length / 3).toLocaleString()} verts, ${(indices.length / 3).toLocaleString()} tris`)
 
-        // Skip tiny decorative props
-        const box = new THREE.Box3().setFromObject(c)
-        const size = box.getSize(new THREE.Vector3())
-        if (Math.max(size.x, size.y, size.z) < MIN_COLLIDER_SIZE) return
+    if (vertices.length === 0 || indices.length === 0) {
+        console.error('[physics] trimesh has no geometry — collider skipped'); return
+    }
+    if (indices.length % 3 !== 0) {
+        console.error('[physics] index count not divisible by 3 — collider skipped'); return
+    }
 
-        const geom = c.geometry
-        const position = geom.attributes.position
-        const matrix = c.matrixWorld
+    const vf = new Float32Array(vertices)
+    const ui = new Uint32Array(indices)
 
-        const v = new THREE.Vector3()
-
-        // Helper to get or create vertex index with position deduplication
-        const getVertexIndex = (i) => {
-            v.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(matrix)
-            const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
-            if (vertexMap.has(key)) return vertexMap.get(key)
-            
-            const idx = vertices.length / 3
-            vertices.push(v.x, v.y, v.z)
-            vertexMap.set(key, idx)
-            return idx
+    const maxIdx = vf.length / 3
+    for (let i = 0; i < ui.length; i++) {
+        if (ui[i] >= maxIdx) {
+            console.error(`[physics] out-of-range index ${ui[i]} — collider skipped`); return
         }
-
-        if (geom.index) {
-            for (let i = 0; i < geom.index.count; i++) {
-                indices.push(getVertexIndex(geom.index.array[i]))
-            }
-        } else {
-            for (let i = 0; i < position.count; i++) {
-                indices.push(getVertexIndex(i))
-            }
-        }
-    })
+    }
 
     const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(
-        RAPIER.ColliderDesc.trimesh(
-            new Float32Array(vertices),
-            new Uint32Array(indices)
-        ),
-        cityBody
-    )
-
-    console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} unique verts, ${(indices.length / 3).toLocaleString()} tris`)
+    world.createCollider(RAPIER.ColliderDesc.trimesh(vf, ui), cityBody)
+    console.log('[physics] trimesh built successfully')
 }
+
+// function buildCityCollider(model) {
+//     const vertices = []
+//     const indices = []
+//     const vertexMap = new Map()
+
+//     model.traverse(c => {
+//         if (!c.isMesh) return
+//         if (!c.visible) return                    // ← skip hidden (clouds etc.)
+//         if (c.userData.isMerged) return           // ← skip merged duplicates
+
+//         // Update matrix BEFORE size check to ensure world-space dimensions are accurate
+//         c.updateWorldMatrix(true, false)
+
+//         // Skip tiny decorative props
+//         const box = new THREE.Box3().setFromObject(c)
+//         const size = box.getSize(new THREE.Vector3())
+//         if (Math.max(size.x, size.y, size.z) < MIN_COLLIDER_SIZE) return
+
+//         const geom = c.geometry
+//         const position = geom.attributes.position
+//         const matrix = c.matrixWorld
+
+//         const v = new THREE.Vector3()
+
+//         // Helper to get or create vertex index with position deduplication
+//         const getVertexIndex = (i) => {
+//             v.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(matrix)
+//             const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
+//             if (vertexMap.has(key)) return vertexMap.get(key)
+            
+//             const idx = vertices.length / 3
+//             vertices.push(v.x, v.y, v.z)
+//             vertexMap.set(key, idx)
+//             return idx
+//         }
+
+//         if (geom.index) {
+//             for (let i = 0; i < geom.index.count; i++) {
+//                 indices.push(getVertexIndex(geom.index.array[i]))
+//             }
+//         } else {
+//             for (let i = 0; i < position.count; i++) {
+//                 indices.push(getVertexIndex(i))
+//             }
+//         }
+//     })
+
+//     const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+//     world.createCollider(
+//         RAPIER.ColliderDesc.trimesh(
+//             new Float32Array(vertices),
+//             new Uint32Array(indices)
+//         ),
+//         cityBody
+//     )
+
+//     console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} unique verts, ${(indices.length / 3).toLocaleString()} tris`)
+// }
+
+
 
 // ─────────────────────────────────────────
 // GROUND DETECTION — downward raycast
@@ -805,24 +865,20 @@ async function loadCity() {
 
         cityModel = gltf.scene
         cityModel.scale.setScalar(0.5)
-        cityModel.updateWorldMatrix(true, false)
+        cityModel.updateWorldMatrix(true, true)
         const invModelMatrix = cityModel.matrixWorld.clone().invert()
 
-        // ── Traversal: categorise every object ────────────────────────────
-        // Buckets for geometry merging: materialKey → { geometries[], material }
         const mergeBuckets = new Map()
+        const stats = { total: 0, meshes: 0, hidden: 0, buckets: {} }
 
-        // Stats for the before/after log
-        const stats = {
-            total: 0, meshes: 0, hidden: 0,
-            buckets: {}     // materialKey → count
-        }
+        const colliderVerts = []
+        const colliderIdxs  = []
+        let collSkipPrefix = 0, collSkipMat = 0, collSkipSize = 0, collIncluded = 0
 
         cityModel.traverse(c => {
             stats.total++
 
-            // ── Hideable groups (clouds, sky, etc.) ───────────────────────
-            const nameLC = c.name ? c.name.toLowerCase() : ''
+            // ── Hideable groups ───────────────────────────────────────────
             let wasHidden = false
             for (const { prefix, group } of HIDEABLE_PREFIXES) {
                 if (c.name && c.name.startsWith(prefix)) {
@@ -833,23 +889,67 @@ async function loadCity() {
                     break
                 }
             }
-            if (wasHidden) return   // skip further processing for hidden objects
+            if (wasHidden) return
 
             if (!c.isMesh) return
             stats.meshes++
 
             c.castShadow = false
             c.receiveShadow = false
-
-            // Texture memory optimisation
             if (c.material && c.material.map) {
                 c.material.map.minFilter = THREE.LinearFilter
                 c.material.map.generateMipmaps = false
             }
 
+            // ── Collider geometry collection (original meshes, before hiding) ──
+            {
+                const skipByPrefix = COLLIDER_SKIP_PREFIXES.some(p => c.name.startsWith(p))
+                const mat = Array.isArray(c.material) ? c.material[0] : c.material
+                const matName = mat?.name?.toLowerCase() ?? ''
+                const skipByMat = COLLIDER_SKIP_MATERIALS.some(m => matName.includes(m))
+
+                if (skipByPrefix) {
+                    collSkipPrefix++
+                } else if (skipByMat) {
+                    collSkipMat++
+                } else {
+                    c.updateWorldMatrix(true, false)
+                    const box = new THREE.Box3().setFromObject(c)
+                    const sz  = box.getSize(new THREE.Vector3())
+                    if (Math.max(sz.x, sz.y, sz.z) < MIN_COLLIDER_SIZE) {
+                        collSkipSize++
+                    } else {
+                        collIncluded++
+                        const geom = c.geometry
+                        const pos  = geom.attributes.position
+                        const mtx  = c.matrixWorld
+                        const base = colliderVerts.length / 3
+                        const v    = new THREE.Vector3()
+
+                        if (geom.index) {
+                            const idx = geom.index.array
+                            const usedVerts = new Map()
+                            for (let i = 0; i < idx.length; i++) {
+                                const vi = idx[i]
+                                if (!usedVerts.has(vi)) {
+                                    usedVerts.set(vi, base + usedVerts.size)
+                                    v.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi)).applyMatrix4(mtx)
+                                    colliderVerts.push(v.x, v.y, v.z)
+                                }
+                                colliderIdxs.push(usedVerts.get(vi))
+                            }
+                        } else {
+                            for (let i = 0; i < pos.count; i++) {
+                                v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mtx)
+                                colliderVerts.push(v.x, v.y, v.z)
+                                colliderIdxs.push(base + i)
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Geometry merge bucketing ───────────────────────────────────
-            // Key = material uuid so only meshes sharing the exact same
-            // material instance get merged (safe — no cross-material batching).
             const mat = Array.isArray(c.material) ? c.material[0] : c.material
             if (!mat) return
 
@@ -858,16 +958,13 @@ async function loadCity() {
                 mergeBuckets.set(key, { geometries: [], material: mat, name: mat.name || key.slice(0, 8) })
                 stats.buckets[mat.name || key.slice(0, 8)] = 0
             }
-
-            // We need geometry local to cityModel for merging
             c.updateWorldMatrix(true, false)
             const localMatrix = c.matrixWorld.clone().premultiply(invModelMatrix)
             const cloned = c.geometry.clone().applyMatrix4(localMatrix)
             mergeBuckets.get(key).geometries.push(cloned)
             stats.buckets[mat.name || key.slice(0, 8)]++
 
-            // Hide originals — merged mesh will replace them
-            c.visible = false
+            c.visible = false   // hide original; merged mesh replaces it
         })
 
         // ── BEFORE stats ───────────────────────────────────────────────────
@@ -879,7 +976,6 @@ async function loadCity() {
         for (const [matName, count] of Object.entries(stats.buckets)) {
             console.log(`    ${matName.padEnd(48)} × ${count} meshes`)
         }
-
         console.log(`  Estimated draw calls BEFORE: ~${stats.meshes}`)
         console.groupEnd()
 
@@ -891,7 +987,6 @@ async function loadCity() {
         for (const [, { geometries, material, name }] of mergeBuckets) {
             if (geometries.length === 0) continue
 
-            // Count tris before (sum of all individual meshes in this bucket)
             geometries.forEach(g => {
                 mergedTrisBefore += g.index
                     ? g.index.count / 3
@@ -900,12 +995,11 @@ async function loadCity() {
 
             try {
                 const merged = mergeGeometries(geometries, false)
-
                 if (!merged) { console.warn(`[merge] failed for bucket "${name}"`); continue }
 
                 const mesh = new THREE.Mesh(merged, material)
                 mesh.name = `__merged_${name}`
-                mesh.frustumCulled = true   // always leave this ON
+                mesh.frustumCulled = true
                 cityModel.add(mesh)
                 mergedDrawCalls++
 
@@ -917,18 +1011,20 @@ async function loadCity() {
             }
         }
 
-        scene.add(cityModel)
-
         // ── AFTER stats ────────────────────────────────────────────────────
         console.group('[city] Scene traversal summary — AFTER merge')
         console.log(`  Merged draw calls : ${mergedDrawCalls}  (was ~${stats.meshes})`)
         console.log(`  Draw call reduction: ${(((stats.meshes - mergedDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
-        console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k — difference = index vs position counts)`)
+        console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k)`)
         console.log(`  Hidden objects     : ${stats.hidden}  (clouds OFF by default)`)
         console.groupEnd()
 
-        buildCityCollider(cityModel)
-        
+        scene.add(cityModel)
+
+        // ── Build collider from pre-merge arrays ───────────────────────────
+        console.log(`[physics] collider skip — prefix:${collSkipPrefix}  mat:${collSkipMat}  size:${collSkipSize}  included:${collIncluded}`)
+        buildCityColliderFromArrays(colliderVerts, colliderIdxs)
+
         console.log('[city] loaded successfully')
         return true
 
@@ -937,6 +1033,7 @@ async function loadCity() {
         return false
     }
 }
+
 // ─────────────────────────────────────────
 // AUTO SPAWN — reads city bounding box and
 // places the character at the map centre,
