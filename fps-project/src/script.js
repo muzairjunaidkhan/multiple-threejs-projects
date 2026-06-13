@@ -434,26 +434,26 @@ async function initPhysics() {
 // TRIMESH COLLIDER — built from pre-merge geometry arrays
 // collected during loadCity() traversal, before originals are hidden.
 // ─────────────────────────────────────────
-const MIN_COLLIDER_SIZE = 2.0   // world-space units after cityModel scale (0.5×)
+const MIN_COLLIDER_SIZE = 0.4   // world-space units after cityModel scale (0.5×)
 
 const COLLIDER_SKIP_PREFIXES = [
     'SM_Env_Grass_',
-    'SM_Env_DustPile_',
-    'SM_Env_Cactus_',
     'SM_Prop_Bush_',
     'SM_Prop_Rope_',
     'SM_Prop_Curtain_',
-    'SM_Prop_Stick_',
-    'SM_Env_Train_Track_Straight_01_Dirt',
-    'SM_Env_Train_Track_Curve_01_Dirt',
     'TriggerOpen',
     // Props the player walks around, not on — add more as you identify them
-    'SM_Prop_Barrel_',
-    'SM_Prop_Chair_',
-    'SM_Prop_Lantern_',
-    'SM_Prop_Sign_',
-    'SM_Prop_Wagon_',
-    'SM_Env_Rock_S_',
+    // 'SM_Prop_Lantern_',
+    // 'SM_Prop_Barrel_',
+    // 'SM_Prop_Chair_',
+    // 'SM_Prop_Wagon_',
+    // 'SM_Prop_Sign_',
+    // 'SM_Env_Rock_S_',
+    // 'SM_Prop_Stick_',
+    // 'SM_Env_Train_Track_Straight_01_Dirt',
+    // 'SM_Env_Train_Track_Curve_01_Dirt',
+    // 'SM_Env_Cactus_',
+    // 'SM_Env_DustPile_',
 ]
 
 const COLLIDER_SKIP_MATERIALS = [
@@ -489,67 +489,6 @@ function buildCityColliderFromArrays(vertices, indices) {
     world.createCollider(RAPIER.ColliderDesc.trimesh(vf, ui), cityBody)
     console.log('[physics] trimesh built successfully')
 }
-
-// function buildCityCollider(model) {
-//     const vertices = []
-//     const indices = []
-//     const vertexMap = new Map()
-
-//     model.traverse(c => {
-//         if (!c.isMesh) return
-//         if (!c.visible) return                    // ← skip hidden (clouds etc.)
-//         if (c.userData.isMerged) return           // ← skip merged duplicates
-
-//         // Update matrix BEFORE size check to ensure world-space dimensions are accurate
-//         c.updateWorldMatrix(true, false)
-
-//         // Skip tiny decorative props
-//         const box = new THREE.Box3().setFromObject(c)
-//         const size = box.getSize(new THREE.Vector3())
-//         if (Math.max(size.x, size.y, size.z) < MIN_COLLIDER_SIZE) return
-
-//         const geom = c.geometry
-//         const position = geom.attributes.position
-//         const matrix = c.matrixWorld
-
-//         const v = new THREE.Vector3()
-
-//         // Helper to get or create vertex index with position deduplication
-//         const getVertexIndex = (i) => {
-//             v.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(matrix)
-//             const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
-//             if (vertexMap.has(key)) return vertexMap.get(key)
-            
-//             const idx = vertices.length / 3
-//             vertices.push(v.x, v.y, v.z)
-//             vertexMap.set(key, idx)
-//             return idx
-//         }
-
-//         if (geom.index) {
-//             for (let i = 0; i < geom.index.count; i++) {
-//                 indices.push(getVertexIndex(geom.index.array[i]))
-//             }
-//         } else {
-//             for (let i = 0; i < position.count; i++) {
-//                 indices.push(getVertexIndex(i))
-//             }
-//         }
-//     })
-
-//     const cityBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-//     world.createCollider(
-//         RAPIER.ColliderDesc.trimesh(
-//             new Float32Array(vertices),
-//             new Uint32Array(indices)
-//         ),
-//         cityBody
-//     )
-
-//     console.log(`[physics] trimesh — ${(vertices.length / 3).toLocaleString()} unique verts, ${(indices.length / 3).toLocaleString()} tris`)
-// }
-
-
 
 // ─────────────────────────────────────────
 // GROUND DETECTION — downward raycast
@@ -1046,7 +985,7 @@ function autoSpawn(model) {
 
     const spawnY = groundY + 90.0
     //position x is temparily set to the left remove it in futre when we have a proper spawn point
-    characterBody.setTranslation({ x: (center.x - 60), y: spawnY, z: center.z }, true)
+    characterBody.setTranslation({ x: (center.x + 50), y: spawnY, z: center.z }, true)
     characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
 
     console.log(`[spawn] center x:${center.x.toFixed(2)} y:${spawnY.toFixed(2)} z:${center.z.toFixed(2)}`)
