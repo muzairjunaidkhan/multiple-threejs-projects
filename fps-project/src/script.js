@@ -436,6 +436,11 @@ async function initPhysics() {
 // ─────────────────────────────────────────
 const MIN_COLLIDER_SIZE = 0.4   // world-space units after cityModel scale (0.5×)
 
+// Minimum identical-geometry instances to use InstancedMesh instead of merge.
+// 2+ already wins on GPU memory; keep low — instancing is strictly better
+// for any repeated geometry.
+const INSTANCE_THRESHOLD = 2
+
 const COLLIDER_SKIP_PREFIXES = [
     'SM_Env_Grass_',
     'SM_Prop_Bush_',
@@ -795,29 +800,58 @@ const HIDEABLE_PREFIXES = [
     // e.g. { prefix: 'SM_Env_Cactus', group: cactusObjects } if you add one
 ]
 
+// ── Geometry fingerprint ──────────────────────────────────────────────────────
+// A fast, allocation-cheap string key that is the same for geometrically
+// identical meshes and different for geometrically distinct ones.
+// We use: vertexCount|indexCount|bboxDiagonal(2dp)|firstVertXYZ(2dp)
+// This is NOT a cryptographic hash — collisions are theoretically possible
+// but vanishingly rare in practice for a game asset scene.
+function geometryFingerprint(geom) {
+    const pos = geom.attributes.position
+    const vCount = pos.count
+    const iCount = geom.index ? geom.index.count : 0
+ 
+    const box = new THREE.Box3().setFromBufferAttribute(pos)
+    const diag = box.getSize(new THREE.Vector3()).length().toFixed(2)
+ 
+    // Sample first vertex for extra discrimination between same-size geometries
+    const x0 = pos.getX(0).toFixed(2)
+    const y0 = pos.getY(0).toFixed(2)
+    const z0 = pos.getZ(0).toFixed(2)
+ 
+    return `${vCount}|${iCount}|${diag}|${x0},${y0},${z0}`
+}
+
 async function loadCity() {
     const loader = new GLTFLoader()
     try {
         const gltf = await new Promise((resolve, reject) => {
             loader.load('./map/scene.gltf', resolve, undefined, reject)
         })
-
+ 
         cityModel = gltf.scene
         cityModel.scale.setScalar(0.5)
         cityModel.updateWorldMatrix(true, true)
         const invModelMatrix = cityModel.matrixWorld.clone().invert()
-
-        const mergeBuckets = new Map()
+ 
+        // ── Bucket maps ───────────────────────────────────────────────────
+        // instanceBuckets : "fingerprint|matUUID" → { geom, material, matrixList[] }
+        // mergeBuckets    : matUUID               → { geometries[], material, name }
+        const instanceBuckets = new Map()
+        const mergeBuckets    = new Map()
+ 
         const stats = { total: 0, meshes: 0, hidden: 0, buckets: {} }
-
+ 
+        // Collider arrays (filled from originals before hiding)
         const colliderVerts = []
         const colliderIdxs  = []
         let collSkipPrefix = 0, collSkipMat = 0, collSkipSize = 0, collIncluded = 0
-
+ 
+        // ── First pass: classify every mesh ──────────────────────────────
         cityModel.traverse(c => {
             stats.total++
-
-            // ── Hideable groups ───────────────────────────────────────────
+ 
+            // Hideable groups (clouds etc.)
             let wasHidden = false
             for (const { prefix, group } of HIDEABLE_PREFIXES) {
                 if (c.name && c.name.startsWith(prefix)) {
@@ -829,24 +863,23 @@ async function loadCity() {
                 }
             }
             if (wasHidden) return
-
             if (!c.isMesh) return
+ 
             stats.meshes++
-
-            c.castShadow = false
+            c.castShadow    = false
             c.receiveShadow = false
-            if (c.material && c.material.map) {
-                c.material.map.minFilter = THREE.LinearFilter
+            if (c.material?.map) {
+                c.material.map.minFilter    = THREE.LinearFilter
                 c.material.map.generateMipmaps = false
             }
-
-            // ── Collider geometry collection (original meshes, before hiding) ──
+ 
+            // ── Collider collection (pre-hide) ────────────────────────────
             {
                 const skipByPrefix = COLLIDER_SKIP_PREFIXES.some(p => c.name.startsWith(p))
-                const mat = Array.isArray(c.material) ? c.material[0] : c.material
-                const matName = mat?.name?.toLowerCase() ?? ''
-                const skipByMat = COLLIDER_SKIP_MATERIALS.some(m => matName.includes(m))
-
+                const mat0   = Array.isArray(c.material) ? c.material[0] : c.material
+                const matLC  = mat0?.name?.toLowerCase() ?? ''
+                const skipByMat = COLLIDER_SKIP_MATERIALS.some(m => matLC.includes(m))
+ 
                 if (skipByPrefix) {
                     collSkipPrefix++
                 } else if (skipByMat) {
@@ -860,11 +893,11 @@ async function loadCity() {
                     } else {
                         collIncluded++
                         const geom = c.geometry
-                        const pos  = geom.attributes.position
+                        const posA = geom.attributes.position
                         const mtx  = c.matrixWorld
                         const base = colliderVerts.length / 3
-                        const v    = new THREE.Vector3()
-
+                        const vv   = new THREE.Vector3()
+ 
                         if (geom.index) {
                             const idx = geom.index.array
                             const usedVerts = new Map()
@@ -872,106 +905,331 @@ async function loadCity() {
                                 const vi = idx[i]
                                 if (!usedVerts.has(vi)) {
                                     usedVerts.set(vi, base + usedVerts.size)
-                                    v.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi)).applyMatrix4(mtx)
-                                    colliderVerts.push(v.x, v.y, v.z)
+                                    vv.set(posA.getX(vi), posA.getY(vi), posA.getZ(vi)).applyMatrix4(mtx)
+                                    colliderVerts.push(vv.x, vv.y, vv.z)
                                 }
                                 colliderIdxs.push(usedVerts.get(vi))
                             }
                         } else {
-                            for (let i = 0; i < pos.count; i++) {
-                                v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mtx)
-                                colliderVerts.push(v.x, v.y, v.z)
+                            for (let i = 0; i < posA.count; i++) {
+                                vv.set(posA.getX(i), posA.getY(i), posA.getZ(i)).applyMatrix4(mtx)
+                                colliderVerts.push(vv.x, vv.y, vv.z)
                                 colliderIdxs.push(base + i)
                             }
                         }
                     }
                 }
             }
-
-            // ── Geometry merge bucketing ───────────────────────────────────
+ 
+            // ── Instance / merge classification ───────────────────────────
             const mat = Array.isArray(c.material) ? c.material[0] : c.material
-            if (!mat) return
-
-            const key = mat.uuid
-            if (!mergeBuckets.has(key)) {
-                mergeBuckets.set(key, { geometries: [], material: mat, name: mat.name || key.slice(0, 8) })
-                stats.buckets[mat.name || key.slice(0, 8)] = 0
+            if (!mat) { c.visible = false; return }
+ 
+            const fp  = geometryFingerprint(c.geometry)
+            const iKey = `${fp}|${mat.uuid}`
+ 
+            if (!instanceBuckets.has(iKey)) {
+                instanceBuckets.set(iKey, {
+                    geometry: c.geometry,   // reference — all in this bucket are identical
+                    material: mat,
+                    matrices: [],
+                    name: c.name,
+                })
             }
+ 
+            // Store this mesh's world matrix (relative to cityModel for correct placement)
             c.updateWorldMatrix(true, false)
-            const localMatrix = c.matrixWorld.clone().premultiply(invModelMatrix)
-            const cloned = c.geometry.clone().applyMatrix4(localMatrix)
-            mergeBuckets.get(key).geometries.push(cloned)
-            stats.buckets[mat.name || key.slice(0, 8)]++
-
-            c.visible = false   // hide original; merged mesh replaces it
+            const localMtx = c.matrixWorld.clone().premultiply(invModelMatrix)
+            instanceBuckets.get(iKey).matrices.push(localMtx)
+ 
+            stats.buckets[mat.name || mat.uuid.slice(0, 8)] =
+                (stats.buckets[mat.name || mat.uuid.slice(0, 8)] || 0) + 1
+ 
+            c.visible = false   // original hidden; replaced by instanced or merged mesh
         })
-
-        // ── BEFORE stats ───────────────────────────────────────────────────
-        console.group('[city] Scene traversal summary — BEFORE merge')
+ 
+        // ── BEFORE stats ──────────────────────────────────────────────────
+        console.group('[city] Scene traversal summary — BEFORE optimise')
         console.log(`  Total objects : ${stats.total}`)
         console.log(`  Meshes        : ${stats.meshes}`)
         console.log(`  Hidden (clouds/sky): ${stats.hidden}`)
         console.log(`  Draw-call buckets by material:`)
-        for (const [matName, count] of Object.entries(stats.buckets)) {
-            console.log(`    ${matName.padEnd(48)} × ${count} meshes`)
-        }
+        for (const [mName, count] of Object.entries(stats.buckets))
+            console.log(`    ${mName.padEnd(48)} × ${count} meshes`)
         console.log(`  Estimated draw calls BEFORE: ~${stats.meshes}`)
         console.groupEnd()
-
-        // ── Merge each bucket into a single mesh ───────────────────────────
-        let mergedDrawCalls = 0
-        let mergedTrisBefore = 0
-        let mergedTrisAfter = 0
-
-        for (const [, { geometries, material, name }] of mergeBuckets) {
+ 
+        // ── Second pass: emit InstancedMesh or merge ──────────────────────
+        let instancedDrawCalls = 0
+        let instancedCount     = 0   // total mesh objects replaced by instancing
+        let mergedDrawCalls    = 0
+ 
+        // Split instance buckets into "instancable" (≥ threshold) and "merge remainder"
+        // Merge remainder is re-bucketed by material for mergeGeometries.
+        const remainderByMat = new Map()   // matUUID → { geometries[], material, name }
+ 
+        for (const [iKey, { geometry, material, matrices, name }] of instanceBuckets) {
+            if (matrices.length >= INSTANCE_THRESHOLD) {
+                // ── InstancedMesh ─────────────────────────────────────────
+                const im = new THREE.InstancedMesh(geometry, material, matrices.length)
+                im.name = `__instanced_${name}_×${matrices.length}`
+                im.frustumCulled = true
+                im.castShadow    = false
+                im.receiveShadow = false
+ 
+                matrices.forEach((mtx, i) => im.setMatrixAt(i, mtx))
+                im.instanceMatrix.needsUpdate = true
+                cityModel.add(im)
+ 
+                instancedDrawCalls++
+                instancedCount += matrices.length
+ 
+            } else {
+                // ── Merge remainder (< threshold) ─────────────────────────
+                const mKey = material.uuid
+                if (!remainderByMat.has(mKey)) {
+                    remainderByMat.set(mKey, {
+                        geometries: [],
+                        material,
+                        name: material.name || mKey.slice(0, 8),
+                    })
+                }
+                const bucket = remainderByMat.get(mKey)
+                // Apply local matrix to clone so merge is in model-space
+                matrices.forEach(mtx => {
+                    bucket.geometries.push(geometry.clone().applyMatrix4(mtx))
+                })
+            }
+        }
+ 
+        // Merge the non-instanced remainder
+        let mergedTrisBefore = 0, mergedTrisAfter = 0
+        for (const [, { geometries, material, name }] of remainderByMat) {
             if (geometries.length === 0) continue
-
             geometries.forEach(g => {
-                mergedTrisBefore += g.index
-                    ? g.index.count / 3
-                    : g.attributes.position.count / 3
+                mergedTrisBefore += g.index ? g.index.count / 3 : g.attributes.position.count / 3
             })
-
             try {
                 const merged = mergeGeometries(geometries, false)
-                if (!merged) { console.warn(`[merge] failed for bucket "${name}"`); continue }
-
+                if (!merged) { console.warn(`[merge] failed for "${name}"`); continue }
+ 
                 const mesh = new THREE.Mesh(merged, material)
                 mesh.name = `__merged_${name}`
                 mesh.frustumCulled = true
                 cityModel.add(mesh)
                 mergedDrawCalls++
-
-                mergedTrisAfter += merged.index
-                    ? merged.index.count / 3
-                    : merged.attributes.position.count / 3
+ 
+                mergedTrisAfter += merged.index ? merged.index.count / 3 : merged.attributes.position.count / 3
             } catch (err) {
-                console.warn(`[merge] exception in bucket "${name}"`, err)
+                console.warn(`[merge] exception in "${name}"`, err)
             }
         }
-
-        // ── AFTER stats ────────────────────────────────────────────────────
-        console.group('[city] Scene traversal summary — AFTER merge')
-        console.log(`  Merged draw calls : ${mergedDrawCalls}  (was ~${stats.meshes})`)
-        console.log(`  Draw call reduction: ${(((stats.meshes - mergedDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
-        console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k)`)
-        console.log(`  Hidden objects     : ${stats.hidden}  (clouds OFF by default)`)
+ 
+        // ── AFTER stats ───────────────────────────────────────────────────
+        const totalDrawCalls = instancedDrawCalls + mergedDrawCalls
+        console.group('[city] Scene traversal summary — AFTER optimise')
+        console.log(`  InstancedMesh draw calls : ${instancedDrawCalls}  (covers ${instancedCount} original meshes)`)
+        console.log(`  Merged draw calls        : ${mergedDrawCalls}`)
+        console.log(`  Total draw calls         : ${totalDrawCalls}  (was ~${stats.meshes})`)
+        console.log(`  Draw call reduction      : ${(((stats.meshes - totalDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
+        console.log(`  Merged tris              : ${Math.round(mergedTrisAfter / 1000)}k`)
+        console.log(`  Hidden objects           : ${stats.hidden}  (clouds OFF by default)`)
         console.groupEnd()
-
+ 
         scene.add(cityModel)
-
-        // ── Build collider from pre-merge arrays ───────────────────────────
+ 
+        // ── Build collider from pre-merge arrays ──────────────────────────
         console.log(`[physics] collider skip — prefix:${collSkipPrefix}  mat:${collSkipMat}  size:${collSkipSize}  included:${collIncluded}`)
         buildCityColliderFromArrays(colliderVerts, colliderIdxs)
-
+ 
         console.log('[city] loaded successfully')
         return true
-
+ 
     } catch (err) {
         console.warn('[city] glTF failed to load', err)
         return false
     }
 }
+
+// async function loadCity() {
+//     const loader = new GLTFLoader()
+//     try {
+//         const gltf = await new Promise((resolve, reject) => {
+//             loader.load('./map/scene.gltf', resolve, undefined, reject)
+//         })
+
+//         cityModel = gltf.scene
+//         cityModel.scale.setScalar(0.5)
+//         cityModel.updateWorldMatrix(true, true)
+//         const invModelMatrix = cityModel.matrixWorld.clone().invert()
+
+//         const mergeBuckets = new Map()
+//         const stats = { total: 0, meshes: 0, hidden: 0, buckets: {} }
+
+//         const colliderVerts = []
+//         const colliderIdxs  = []
+//         let collSkipPrefix = 0, collSkipMat = 0, collSkipSize = 0, collIncluded = 0
+
+//         cityModel.traverse(c => {
+//             stats.total++
+
+//             // ── Hideable groups ───────────────────────────────────────────
+//             let wasHidden = false
+//             for (const { prefix, group } of HIDEABLE_PREFIXES) {
+//                 if (c.name && c.name.startsWith(prefix)) {
+//                     group.push(c)
+//                     c.visible = false
+//                     wasHidden = true
+//                     stats.hidden++
+//                     break
+//                 }
+//             }
+//             if (wasHidden) return
+
+//             if (!c.isMesh) return
+//             stats.meshes++
+
+//             c.castShadow = false
+//             c.receiveShadow = false
+//             if (c.material && c.material.map) {
+//                 c.material.map.minFilter = THREE.LinearFilter
+//                 c.material.map.generateMipmaps = false
+//             }
+
+//             // ── Collider geometry collection (original meshes, before hiding) ──
+//             {
+//                 const skipByPrefix = COLLIDER_SKIP_PREFIXES.some(p => c.name.startsWith(p))
+//                 const mat = Array.isArray(c.material) ? c.material[0] : c.material
+//                 const matName = mat?.name?.toLowerCase() ?? ''
+//                 const skipByMat = COLLIDER_SKIP_MATERIALS.some(m => matName.includes(m))
+
+//                 if (skipByPrefix) {
+//                     collSkipPrefix++
+//                 } else if (skipByMat) {
+//                     collSkipMat++
+//                 } else {
+//                     c.updateWorldMatrix(true, false)
+//                     const box = new THREE.Box3().setFromObject(c)
+//                     const sz  = box.getSize(new THREE.Vector3())
+//                     if (Math.max(sz.x, sz.y, sz.z) < MIN_COLLIDER_SIZE) {
+//                         collSkipSize++
+//                     } else {
+//                         collIncluded++
+//                         const geom = c.geometry
+//                         const pos  = geom.attributes.position
+//                         const mtx  = c.matrixWorld
+//                         const base = colliderVerts.length / 3
+//                         const v    = new THREE.Vector3()
+
+//                         if (geom.index) {
+//                             const idx = geom.index.array
+//                             const usedVerts = new Map()
+//                             for (let i = 0; i < idx.length; i++) {
+//                                 const vi = idx[i]
+//                                 if (!usedVerts.has(vi)) {
+//                                     usedVerts.set(vi, base + usedVerts.size)
+//                                     v.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi)).applyMatrix4(mtx)
+//                                     colliderVerts.push(v.x, v.y, v.z)
+//                                 }
+//                                 colliderIdxs.push(usedVerts.get(vi))
+//                             }
+//                         } else {
+//                             for (let i = 0; i < pos.count; i++) {
+//                                 v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mtx)
+//                                 colliderVerts.push(v.x, v.y, v.z)
+//                                 colliderIdxs.push(base + i)
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+
+//             // ── Geometry merge bucketing ───────────────────────────────────
+//             const mat = Array.isArray(c.material) ? c.material[0] : c.material
+//             if (!mat) return
+
+//             const key = mat.uuid
+//             if (!mergeBuckets.has(key)) {
+//                 mergeBuckets.set(key, { geometries: [], material: mat, name: mat.name || key.slice(0, 8) })
+//                 stats.buckets[mat.name || key.slice(0, 8)] = 0
+//             }
+//             c.updateWorldMatrix(true, false)
+//             const localMatrix = c.matrixWorld.clone().premultiply(invModelMatrix)
+//             const cloned = c.geometry.clone().applyMatrix4(localMatrix)
+//             mergeBuckets.get(key).geometries.push(cloned)
+//             stats.buckets[mat.name || key.slice(0, 8)]++
+
+//             c.visible = false   // hide original; merged mesh replaces it
+//         })
+
+//         // ── BEFORE stats ───────────────────────────────────────────────────
+//         console.group('[city] Scene traversal summary — BEFORE merge')
+//         console.log(`  Total objects : ${stats.total}`)
+//         console.log(`  Meshes        : ${stats.meshes}`)
+//         console.log(`  Hidden (clouds/sky): ${stats.hidden}`)
+//         console.log(`  Draw-call buckets by material:`)
+//         for (const [matName, count] of Object.entries(stats.buckets)) {
+//             console.log(`    ${matName.padEnd(48)} × ${count} meshes`)
+//         }
+//         console.log(`  Estimated draw calls BEFORE: ~${stats.meshes}`)
+//         console.groupEnd()
+
+//         // ── Merge each bucket into a single mesh ───────────────────────────
+//         let mergedDrawCalls = 0
+//         let mergedTrisBefore = 0
+//         let mergedTrisAfter = 0
+
+//         for (const [, { geometries, material, name }] of mergeBuckets) {
+//             if (geometries.length === 0) continue
+
+//             geometries.forEach(g => {
+//                 mergedTrisBefore += g.index
+//                     ? g.index.count / 3
+//                     : g.attributes.position.count / 3
+//             })
+
+//             try {
+//                 const merged = mergeGeometries(geometries, false)
+//                 if (!merged) { console.warn(`[merge] failed for bucket "${name}"`); continue }
+
+//                 const mesh = new THREE.Mesh(merged, material)
+//                 mesh.name = `__merged_${name}`
+//                 mesh.frustumCulled = true
+//                 cityModel.add(mesh)
+//                 mergedDrawCalls++
+
+//                 mergedTrisAfter += merged.index
+//                     ? merged.index.count / 3
+//                     : merged.attributes.position.count / 3
+//             } catch (err) {
+//                 console.warn(`[merge] exception in bucket "${name}"`, err)
+//             }
+//         }
+
+//         // ── AFTER stats ────────────────────────────────────────────────────
+//         console.group('[city] Scene traversal summary — AFTER merge')
+//         console.log(`  Merged draw calls : ${mergedDrawCalls}  (was ~${stats.meshes})`)
+//         console.log(`  Draw call reduction: ${(((stats.meshes - mergedDrawCalls) / stats.meshes) * 100).toFixed(1)}%`)
+//         console.log(`  Tris in merged geo : ${Math.round(mergedTrisAfter / 1000)}k  (individual sum was ${Math.round(mergedTrisBefore / 1000)}k)`)
+//         console.log(`  Hidden objects     : ${stats.hidden}  (clouds OFF by default)`)
+//         console.groupEnd()
+
+//         scene.add(cityModel)
+
+//         // ── Build collider from pre-merge arrays ───────────────────────────
+//         console.log(`[physics] collider skip — prefix:${collSkipPrefix}  mat:${collSkipMat}  size:${collSkipSize}  included:${collIncluded}`)
+//         buildCityColliderFromArrays(colliderVerts, colliderIdxs)
+
+//         console.log('[city] loaded successfully')
+//         return true
+
+//     } catch (err) {
+//         console.warn('[city] glTF failed to load', err)
+//         return false
+//     }
+// }
+
+
 
 // ─────────────────────────────────────────
 // AUTO SPAWN — reads city bounding box and
