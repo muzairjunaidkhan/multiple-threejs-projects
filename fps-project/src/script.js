@@ -267,6 +267,48 @@ document.body.appendChild(crosshair)
 const INTERACT_RADIUS = 1.5
 const interactables   = []
 
+// ─────────────────────────────────────────
+// INTERACTABLE ENABLE CONFIG
+//
+//  INTERACTABLE_ENABLED      — per-category on/off, read once at LOAD time.
+//                              A disabled category is never registered, so it
+//                              costs nothing per frame (no prompt, no anim, no
+//                              kinematic collider). It still renders + collides
+//                              statically — it just can't be interacted with.
+//  INTERACTABLE_ITEM_OVERRIDES — per-item on/off by mesh-name prefix. Longest
+//                              match wins, so you can flip a whole prefix or a
+//                              single instance. Overrides the category setting.
+//  INTERACT_ACTIVE           — runtime per-category toggle (Settings → Interactables).
+//                              Only hides/shows interaction for already-registered
+//                              items; it can't bring back a load-disabled category.
+// ─────────────────────────────────────────
+const INTERACTABLE_ENABLED = {
+    door:          true,
+    door_vault:    true,
+    door_swinging: true,
+    messageboard:  true,
+    suitcase_lid:  true,
+    cash_register: true,
+    ladder:        false,   // stub handler — off by default
+    piano:         false,   // stub handler — off by default
+}
+
+const INTERACTABLE_ITEM_OVERRIDES = {
+    // 'SM_Building_Single_FrontDoor_05': false,   // disable one specific door
+    // 'SM_Prop_Piano_01':                true,    // enable one item in an off category
+}
+
+function isInteractableEnabled(name, type) {
+    let v, best = -1
+    for (const k in INTERACTABLE_ITEM_OVERRIDES) {
+        if (name.startsWith(k) && k.length > best) { v = INTERACTABLE_ITEM_OVERRIDES[k]; best = k.length }
+    }
+    return v !== undefined ? v : (INTERACTABLE_ENABLED[type] ?? true)
+}
+
+// Runtime per-category gate, seeded from the load-time config.
+const INTERACT_ACTIVE = { ...INTERACTABLE_ENABLED }
+
 const _interactPrompt = document.createElement('div')
 _interactPrompt.style.cssText = `
     position:fixed;bottom:22%;left:50%;transform:translateX(-50%);
@@ -289,6 +331,7 @@ function updateInteraction() {
     let closestDist = INTERACT_RADIUS
 
     for (const entry of interactables) {
+        if (INTERACT_ACTIVE[entry.type] === false || entry._active === false) continue
         entry.object.getWorldPosition(_objPos3)
         const d = _charPos3.distanceTo(_objPos3)
         if (d < closestDist) { closestDist = d; closest = entry }
@@ -322,20 +365,20 @@ function interactLabel(type) {
         messageboard:  '[E] Read',
         piano:         '[E] Play',
         suitcase_lid:  '[E] Open',
-        dresser:       '[E] Open Drawer',
         cash_register: '[E] Open Register',
     })[type] ?? '[E] Interact'
 }
 
 function triggerInteract(entry) {
+    // Runtime gate (GUI). A disabled category or individual item does nothing.
+    if (INTERACT_ACTIVE[entry.type] === false || entry._active === false) return
     switch (entry.type) {
-        case 'door':          interactDoor(entry);          break
-        case 'door_vault':    interactDoor(entry, 2.1);     break
-        case 'door_swinging': interactSwingingDoor(entry);  break
-        case 'suitcase_lid':  interactSuitcaseLid(entry);   break
-        case 'dresser':       interactDresser(entry);       break
-        case 'messageboard':  interactMessageBoard(entry);  break
-        case 'cash_register': interactCashRegister(entry);  break
+        case 'door':          interactDoor(entry);              break
+        case 'door_vault':    interactDoor(entry, 2.1);         break
+        case 'door_swinging': interactDoor(entry, SWING_ANGLE); break
+        case 'suitcase_lid':  interactSuitcaseLid(entry);       break
+        case 'messageboard':  interactMessageBoard(entry);      break
+        case 'cash_register': interactCashRegister(entry);      break
         case 'ladder': console.log('[interact] ladder — Phase 5'); break
         case 'piano':  console.log('[interact] piano  — Phase 7'); break
         default: console.log(`[interact] unhandled type: ${entry.type}`); break
@@ -344,39 +387,41 @@ function triggerInteract(entry) {
 
 // ─────────────────────────────────────────
 // CASH REGISTER
+//
+// The prop is a single mesh (no separate drawer geometry), so we just nudge
+// the whole mesh a small amount along its local Z as a "drawer pops" cue.
 // ─────────────────────────────────────────
+const CASH_REGISTER_SLIDE = 0.1   // metres — small nudge
+
 function interactCashRegister(entry) {
     if (entry._animating) return
-    const pivot = entry.object
-    let drawer = null, smallestH = Infinity
-    pivot.traverse(c => {
-        if (!c.isMesh) return
-        const h = new THREE.Box3().setFromObject(c).getSize(new THREE.Vector3()).y
-        if (h < smallestH) { smallestH = h; drawer = c }
-    })
-    if (!drawer) return
-    entry._drawerMesh = drawer
-    if (entry.closedZ === undefined) entry.closedZ = drawer.position.z
-    if (entry.openZ   === undefined) entry.openZ   = entry.closedZ + 0.15
-    entry._targetZ   = entry.state === 'closed' ? entry.openZ : entry.closedZ
-    entry.state      = entry.state === 'closed' ? 'open' : 'closed'
-    entry._animating = true
-    entry._animAxis  = 'posZ'
+    const mesh = entry.object
+    if (entry.closedZ === undefined) entry.closedZ = mesh.position.z
+    if (entry.openZ   === undefined) entry.openZ   = entry.closedZ + CASH_REGISTER_SLIDE
+    entry._drawerMesh = mesh
+    entry._targetZ    = entry.state === 'closed' ? entry.openZ : entry.closedZ
+    entry.state       = entry.state === 'closed' ? 'open' : 'closed'
+    entry._animating  = true
+    entry._animAxis   = 'posZ'
     _propAnims.push(entry)
 }
 
 // ─────────────────────────────────────────
 // DOOR DIRECTION — how swing direction works
 //
-//  Priority: DOOR_DIRECTION_OVERRIDES prefix match → DOOR_FIXED_DIRECTION
+//  Lookup: longest matching key in DOOR_DIRECTION_OVERRIDES wins, else
+//          DOOR_FIXED_DIRECTION. Keys may be a broad prefix (applies to every
+//          instance) OR a specific instance name (overrides the prefix), so a
+//          single door that swings the wrong way can be fixed on its own.
 //
 //  +1 = positive local-Y rotation (CCW when viewed from above)
 //  -1 = negative local-Y rotation (CW  when viewed from above)
 //
-//  To identify which way a door needs to go:
+//  To fix a door that swings the wrong way (collider ends up on the wrong side):
 //    1. Turn on Debug → Show Door Colliders
 //    2. Press E on the door — watch which way it swings
-//    3. If wrong, flip its value here
+//    3. Copy the name from the [door] <name> … console log and add it here
+//       with the flipped value, e.g. 'SM_Building_Single_FrontDoor_02': -1
 // ─────────────────────────────────────────
 const DOOR_SWING_ANGLE   = Math.PI / 2   // 90° — standard hinged door
 const DOOR_ANIM_SPEED    = 4.0           // rad/s
@@ -420,6 +465,24 @@ const DOOR_DIRECTION_OVERRIDES = {
     // ── VAULT ─────────────────────────────────────────────────────────────
     // Bank vault heavy door — 120° swing (2.1 rad), left-hinged → opens rightward
     'SM_Prop_Vault_Door_'            :  1,
+
+    // ── SALOON SWINGING (bat-wing) ────────────────────────────────────────
+    // Now a simple walk-through toggle like every other door
+    'SM_Bld_Saloon_Swinging_Doors_'  :  1,
+
+    // ── PER-INSTANCE OVERRIDES (longest match wins) ───────────────────────
+    // Add specific instance names here to flip a single door, e.g.:
+    // 'SM_Building_Single_FrontDoor_02': -1,
+    // 'SM_Bld_Saloon_UpstairsDoor_03'  : -1,
+}
+
+// Longest-match lookup: specific instance keys beat broad prefix keys.
+function doorDirection(name) {
+    let dir = DOOR_FIXED_DIRECTION, best = -1
+    for (const k in DOOR_DIRECTION_OVERRIDES) {
+        if (name.startsWith(k) && k.length > best) { dir = DOOR_DIRECTION_OVERRIDES[k]; best = k.length }
+    }
+    return dir
 }
 
 // ─────────────────────────────────────────
@@ -432,11 +495,8 @@ function interactDoor(entry, swingAngle = DOOR_SWING_ANGLE) {
 
     const pivot = entry.object
 
-    // Find direction: first matching override prefix wins, else global default
-    let direction = DOOR_FIXED_DIRECTION
-    for (const [pfx, forced] of Object.entries(DOOR_DIRECTION_OVERRIDES)) {
-        if (pivot.name.startsWith(pfx)) { direction = forced; break }
-    }
+    // Longest-match override (specific instance beats prefix), else global default
+    const direction = doorDirection(pivot.name)
 
     if (entry.closedRotY === undefined) entry.closedRotY = pivot.rotation.y
 
@@ -461,139 +521,31 @@ function interactDoor(entry, swingAngle = DOOR_SWING_ANGLE) {
 }
 
 // ─────────────────────────────────────────
-// updateDoorAnims
-//
-// FIX — the old code only ticked _returnTimer when diff < 0.001 AND
-//        phase === 'waiting'. That meant the waiting countdown only ran
-//        for one frame (the snap frame), then the next iteration saw
-//        phase still 'waiting' but diff was now 0 because we'd set it —
-//        the real bug was that after snap the phase changed to 'waiting'
-//        but the NEXT frame the diff check hit 0 again and jumped straight
-//        to closing before the timer expired. Pulled the waiting+closing
-//        logic OUT of the diff<0.001 block so the timer ticks every frame
-//        regardless of whether we've reached the target yet.
+// updateDoorAnims — single toggle path for every door type.
+// Swinging doors share this; they have no _physicsBody so updateDoorCollider
+// is a no-op for them (they stay pass-through).
 // ─────────────────────────────────────────
 function updateDoorAnims(dt) {
     for (let i = _doorAnims.length - 1; i >= 0; i--) {
         const entry = _doorAnims[i]
         const pivot = entry.object
-        const isSwinging = entry.type === 'door_swinging'
-        const speed  = isSwinging ? SWING_ANIM_SPEED : DOOR_ANIM_SPEED
-        const diff   = entry._targetRotY - pivot.rotation.y
+        const diff  = entry._targetRotY - pivot.rotation.y
 
         if (Math.abs(diff) > 0.001) {
-            // Still moving toward target
-            pivot.rotation.y += diff * Math.min(1, speed * dt)
-            if (!isSwinging) updateDoorCollider(entry)
-
+            pivot.rotation.y += diff * Math.min(1, DOOR_ANIM_SPEED * dt)
+            updateDoorCollider(entry)
         } else {
-            // Snapped to target
             pivot.rotation.y = entry._targetRotY
-            if (!isSwinging) updateDoorCollider(entry)
-
-            if (isSwinging) {
-                // ── Swinging door state machine ──
-                if (entry._phase === 'opening') {
-                    // Just reached the open angle — start the return timer
-                    entry._phase = 'waiting'
-                    console.log(`[swinging] ${pivot.name}  → waiting (${SWING_RETURN_DELAY}s)`)
-                }
-                // (fall-through: if phase is already 'waiting' we continue below)
-            } else {
-                // Regular door — done
-                entry._animating = false
-                _doorAnims.splice(i, 1)
-            }
-        }
-
-        // ── Swinging door timer — ticks EVERY frame while in 'waiting' phase ──
-        // Kept outside the diff block so it always counts down even if we
-        // happen to be still approaching the target (shouldn't happen, but safe).
-        if (isSwinging && entry._phase === 'waiting') {
-            entry._returnTimer -= dt
-            if (entry._returnTimer <= 0) {
-                entry._phase      = 'closing'
-                entry._targetRotY = entry._swingCloseRotY
-                console.log(`[swinging] ${pivot.name}  → closing`)
-            }
-        }
-
-        if (isSwinging && entry._phase === 'closing' && Math.abs(pivot.rotation.y - entry._swingCloseRotY) < 0.001) {
-            pivot.rotation.y = entry._swingCloseRotY
-            entry._phase     = null
+            updateDoorCollider(entry)
             entry._animating = false
-            entry.state      = 'closed'
             _doorAnims.splice(i, 1)
-            console.log(`[swinging] ${pivot.name}  → closed`)
         }
     }
 }
 
-// ─────────────────────────────────────────
-// SWINGING SALOON DOORS
-//
-// Pass-through by design — NO physics collider (removed last session).
-// Direction auto-detected from which side the player is on (correct for
-// saloon doors — they yield away from whoever pushes them).
-// Re-triggering while closing resets the door immediately.
-// ─────────────────────────────────────────
-const SWING_ANGLE        = Math.PI / 4   // 45°
-const SWING_ANIM_SPEED   = 6.0           // rad/s — fast spring feel
-const SWING_RETURN_DELAY = 1.2           // seconds before springing back
-
-function interactSwingingDoor(entry) {
-    // Block re-trigger only while still opening, allow during waiting/closing
-    if (entry._animating && entry._phase === 'opening') return
-
-    const pivot = entry.object
-    pivot.updateWorldMatrix(true, false)
-
-    if (entry.closedRotY === undefined) entry.closedRotY = pivot.rotation.y
-
-    // Always re-read character position fresh (don't rely on _charPos3 being current)
-    const cp = characterBody ? characterBody.translation() : { x: 0, y: 0, z: 0 }
-    const freshCharPos = new THREE.Vector3(cp.x, cp.y, cp.z)
-
-    pivot.getWorldPosition(_objPos3)
-    const toPlayer = freshCharPos.clone().sub(_objPos3)
-    toPlayer.y = 0
-    if (toPlayer.lengthSq() < 0.0001) {
-        // Player exactly on pivot — pick a default direction
-        toPlayer.set(1, 0, 0)
-    }
-    toPlayer.normalize()
-
-    const worldQuat = pivot.getWorldQuaternion(new THREE.Quaternion())
-    const localX    = new THREE.Vector3(1,0,0).applyQuaternion(worldQuat)
-    const localZ    = new THREE.Vector3(0,0,1).applyQuaternion(worldQuat)
-    localX.y = 0; localX.normalize()
-    localZ.y = 0; localZ.normalize()
-
-    const dotX      = toPlayer.dot(localX)
-    const dotZ      = toPlayer.dot(localZ)
-    const dot       = Math.abs(dotX) > Math.abs(dotZ) ? dotX : dotZ
-    const direction = dot > 0 ? -1 : 1
-
-    entry._swingOpenRotY  = entry.closedRotY + direction * SWING_ANGLE
-    entry._swingCloseRotY = entry.closedRotY
-    entry._phase          = 'opening'
-    entry._returnTimer    = SWING_RETURN_DELAY
-    entry._targetRotY     = entry._swingOpenRotY
-    entry.state           = 'open'
-    entry._animating      = true
-
-    // Remove stale animation entry before pushing a new one
-    const existing = _doorAnims.findIndex(a => a === entry)
-    if (existing !== -1) _doorAnims.splice(existing, 1)
-    _doorAnims.push(entry)
-
-    console.log(
-        `[swinging] ${pivot.name}` +
-        `  dir:${direction > 0 ? '+1' : '-1'}` +
-        `  open:${(entry._swingOpenRotY * 180 / Math.PI).toFixed(1)}°` +
-        `  closed:${(entry.closedRotY   * 180 / Math.PI).toFixed(1)}°`
-    )
-}
+// Saloon bat-wing doors — toggle open/close like any door, but kept
+// pass-through (no collider, see createDoorCollider). Smaller swing angle.
+const SWING_ANGLE = Math.PI / 4   // 45°
 
 // ─────────────────────────────────────────
 // PROP ANIMATIONS
@@ -610,26 +562,6 @@ function interactSuitcaseLid(entry) {
     entry.state       = entry.state === 'closed' ? 'open' : 'closed'
     entry._animating  = true
     entry._animAxis   = 'rotX'
-    _propAnims.push(entry)
-}
-
-function interactDresser(entry) {
-    if (entry._animating) return
-    const pivot = entry.object
-    let drawer  = null
-    pivot.traverse(c => {
-        if (drawer) return
-        if (c.isMesh && c.name.toLowerCase().includes('drawer')) drawer = c
-    })
-    if (!drawer) pivot.traverse(c => { if (!drawer && c.isMesh) drawer = c })
-    if (!drawer) return
-    entry._drawerMesh = drawer
-    if (entry.closedZ === undefined) entry.closedZ = drawer.position.z
-    if (entry.openZ   === undefined) entry.openZ   = entry.closedZ + 0.3
-    entry._targetZ   = entry.state === 'closed' ? entry.openZ : entry.closedZ
-    entry.state      = entry.state === 'closed' ? 'open' : 'closed'
-    entry._animating = true
-    entry._animAxis  = 'posZ'
     _propAnims.push(entry)
 }
 
@@ -720,9 +652,9 @@ document.addEventListener('mousemove', (e) => {
     targetPitch += e.movementY * CAM.pitchSensitivity
     targetPitch  = THREE.MathUtils.clamp(targetPitch, 0.08, 1.4)
 })
-window.addEventListener('wheel', (e) => {
-    CAM.distance = THREE.MathUtils.clamp(CAM.distance + e.deltaY * 0.01, 1.5, 14)
-}, { passive: true })
+// window.addEventListener('wheel', (e) => {
+//     CAM.distance = THREE.MathUtils.clamp(CAM.distance + e.deltaY * 0.01, 1.5, 14)
+// }, { passive: true })
 
 // ─────────────────────────────────────────
 // EMOTE WHEEL
@@ -836,6 +768,45 @@ gui.addFolder('Scene').add(SCENE, 'showClouds').name('Show Clouds').onChange(v =
     cloudObjects.forEach(c => { c.visible = v })
 })
 
+// Runtime interaction toggles (behaviour only — these never change what is
+// rendered, so tris/draws/geom stay the same). To actually drop draw calls,
+// disable items in the load-time config (INTERACTABLE_ENABLED / ITEM_OVERRIDES);
+// disabled items fall through to the city's merge/instance batch.
+const INTERACT_LABELS = {
+    door: 'Doors', door_vault: 'Vault Door', door_swinging: 'Saloon Doors',
+    messageboard: 'Message Boards', suitcase_lid: 'Suitcases',
+    cash_register: 'Cash Registers', ladder: 'Ladders', piano: 'Pianos',
+}
+const itf = gui.addFolder('Interactables')
+
+// Master per-category toggles (available immediately).
+for (const type of Object.keys(INTERACT_ACTIVE)) {
+    itf.add(INTERACT_ACTIVE, type).name(INTERACT_LABELS[type] ?? type)
+}
+itf.close()
+
+// Trim the long mesh names down to something readable in the GUI.
+function shortInteractName(name) {
+    return name.replace(/_PolygonWestern.*$/i, '').replace(/^SM_(Bld|Building|Prop|Env)_/, '')
+}
+
+// Built after loadCity (once `interactables` is populated): one sub-folder per
+// category listing every individual instance, each with its own checkbox so a
+// single item can be toggled without disabling the whole category.
+function buildInteractableItemGUI() {
+    const byType = {}
+    for (const e of interactables) (byType[e.type] = byType[e.type] || []).push(e)
+    for (const type of Object.keys(byType)) {
+        const list = byType[type]
+        const sub  = itf.addFolder(`${INTERACT_LABELS[type] ?? type} — items (${list.length})`)
+        for (const e of list) {
+            if (e._active === undefined) e._active = true
+            sub.add(e, '_active').name(shortInteractName(e.object.name))
+        }
+        sub.close()
+    }
+}
+
 const dbf = gui.addFolder('Debug')
 dbf.add(DEBUG, 'showCapsule').name('Show Capsule').onChange(v => {
     if (!capsuleHelper) capsuleHelper = createCapsuleHelper()
@@ -875,7 +846,7 @@ async function initPhysics() {
 // ─────────────────────────────────────────
 // TRIMESH COLLIDER
 // ─────────────────────────────────────────
-const MIN_COLLIDER_SIZE  = 0.4
+const MIN_COLLIDER_SIZE  = 0.5
 const INSTANCE_THRESHOLD = 2
 
 const COLLIDER_SKIP_PREFIXES = [
@@ -884,6 +855,7 @@ const COLLIDER_SKIP_PREFIXES = [
     'SM_Prop_Rope_',
     'SM_Prop_Curtain_',
     'TriggerOpen',
+    'SM_Bld_Saloon_Swinging_Doors_',   // bat-wing doors are pass-through — keep out of the static trimesh
 ]
 const COLLIDER_SKIP_MATERIALS = ['glass','water','light','melvin_was_here','chalojail']
 
@@ -1221,7 +1193,8 @@ async function loadCity() {
         // Matched by mesh name prefix; first match wins.
         // door          — hinged door with physics collider, fixed direction
         // door_vault    — heavy vault door, wider swing (2.1 rad)
-        // door_swinging — saloon bat-wing doors, pass-through, auto-direction
+        // door_swinging — saloon bat-wing doors, pass-through (no collider),
+        //                 simple open/close toggle like a regular door (45°)
         // ──────────────────────────────────────────────────────────────────
         const INTERACTABLE_RULES = [
             // ── Jail ──────────────────────────────────────────────────────
@@ -1248,8 +1221,7 @@ async function loadCity() {
             { prefix: 'SM_Prop_MessageBoard_',          type: 'messageboard'  },  // readable notice board
             { prefix: 'SM_Prop_Suitcase_01_Lid_',       type: 'suitcase_lid'  },  // suitcase type 1 lid
             { prefix: 'SM_Prop_Suitcase_02_Lid_',       type: 'suitcase_lid'  },  // suitcase type 2 lid
-            { prefix: 'SM_Prop_Dresser_01_',            type: 'dresser'       },  // dresser with sliding drawer
-            { prefix: 'SM_Prop_Cash_Register_01_',      type: 'cash_register' },  // cash register drawer
+            { prefix: 'SM_Prop_Cash_Register_01_',      type: 'cash_register' },  // cash register (single mesh — small slide)
             { prefix: 'SM_Prop_Piano_',                 type: 'piano'         },  // playable piano
         ]
 
@@ -1312,14 +1284,24 @@ async function loadCity() {
             }
 
             // ── Interactable registration ───────────────────────────────────
+            // Enabled  → registered and kept as its own standalone mesh so it can
+            //            animate. This is why each interactable costs one draw call.
+            // Disabled → NOT registered; falls through to the instance/merge path
+            //            below so it batches with the rest of the city (fewer draw
+            //            calls + geometries). It still renders and keeps its static
+            //            trimesh collision — it just can't be interacted with.
+            //            (Triangle count is unchanged: the mesh is still drawn.)
             {
                 const rule = INTERACTABLE_RULES.find(r => c.name.startsWith(r.prefix))
                 if (rule) {
-                    if (!interactables.some(e => e.object === c)) {
-                        interactables.push({ object: c, type: rule.type, state: 'closed' })
-                        console.log(`[interact] ${c.name.padEnd(52)}  (${rule.type})`)
+                    if (isInteractableEnabled(c.name, rule.type)) {
+                        if (!interactables.some(e => e.object === c)) {
+                            interactables.push({ object: c, type: rule.type, state: 'closed', _active: true })
+                            console.log(`[interact] ${c.name.padEnd(52)}  (${rule.type})`)
+                        }
+                        return
                     }
-                    return
+                    // disabled → fall through to instance/merge classification
                 }
             }
 
@@ -1505,13 +1487,9 @@ function tick() {
 
         updateAnimation(delta)
         updateInteraction()
-        updateDoorAnims(delta)
+        updateDoorAnims(delta)   // syncs each door's collider while it animates
         updatePropAnims(delta)
         updateDoorHelpers()
-
-        for (const entry of interactables) {
-            if (entry._physicsBody) updateDoorCollider(entry)
-        }
     }
 
     if (mixer) mixer.update(delta)
@@ -1538,6 +1516,9 @@ async function init() {
             createDoorCollider(entry)
         }
     }
+
+    // Per-item GUI checkboxes (interactables are now populated)
+    buildInteractableItemGUI()
 
     if (cityModel) autoSpawn(cityModel)
 
