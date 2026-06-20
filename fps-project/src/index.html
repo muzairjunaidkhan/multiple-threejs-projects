@@ -26,6 +26,7 @@
             <li><kbd>W A S D</kbd> — Move (camera-relative)</li>
             <li><kbd>Space</kbd> — Jump</li>
             <li><kbd>V</kbd> — Emote Wheel</li>
+            <li><kbd>M</kbd> — Open full map</li>
             <li><kbd>Mouse</kbd> — Look around (FPS)</li>
             <li><kbd>Esc</kbd> — Release mouse</li>
         </ul>
@@ -41,10 +42,31 @@
          Loading screen shown while assets load
     ═══════════════════════════════════════════ -->
     <div id="loading-screen">
+        <!-- GTA-style art slideshow. Each slide cross-fades over the others.
+             Drop replacement art in static/loading/ as slide-1.jpg … slide-5.jpg
+             (served at /loading/…). Until then each slide shows its tint colour. -->
+        <div id="loading-slides">
+            <div class="loading-slide" style="--img:url('/loading/slide-1.jpg'); --tint:#1a2a3a;">
+                <span class="slide-caption">DEAD MESA</span>
+            </div>
+            <div class="loading-slide" style="--img:url('/loading/slide-2.jpg'); --tint:#3a2418;">
+                <span class="slide-caption">A Town With No Law</span>
+            </div>
+            <div class="loading-slide" style="--img:url('/loading/slide-3.jpg'); --tint:#2a2030;">
+                <span class="slide-caption">Every Door Has a Story</span>
+            </div>
+            <div class="loading-slide" style="--img:url('/loading/slide-4.jpg'); --tint:#1f3026;">
+                <span class="slide-caption">Ride Into the Dust</span>
+            </div>
+            <div class="loading-slide" style="--img:url('/loading/slide-5.jpg'); --tint:#332014;">
+                <span class="slide-caption">Welcome to the Frontier</span>
+            </div>
+        </div>
+
         <div id="loading-content">
-            <div id="loading-title">Loading Scene…</div>
+            <div id="loading-title">DEAD MESA</div>
             <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
-            <div id="loading-hint">Initialising physics · Loading character</div>
+            <div id="loading-hint">Loading<span class="loading-dots"></span></div>
         </div>
     </div>
 

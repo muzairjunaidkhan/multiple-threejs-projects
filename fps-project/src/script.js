@@ -13,6 +13,13 @@ import RAPIER from '@dimforge/rapier3d-compat'
 import GUI from 'lil-gui'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
+// ── Game shell (state machine, menu, saves, missions, cutscene) ──
+import { STATES, getState, isPlaying, setState as setGameState, onStateChange } from './game/gameState.js'
+import * as saveSystem from './game/saveSystem.js'
+import * as missions from './game/missions.js'
+import { initMenu, showMainMenu, showPauseMenu, hideAllMenus } from './game/menu.js'
+import { initCutscene, playIntro } from './game/cutscene.js'
+
 // ─────────────────────────────────────────
 // TUNING CONSTANTS
 // ─────────────────────────────────────────
@@ -86,11 +93,16 @@ const SHADOW = {
 // ─────────────────────────────────────────
 // RENDERER
 // ─────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+const renderer = new THREE.WebGLRenderer({
+    canvas, antialias: true,
+    powerPreference: 'high-performance',   // prefer the discrete GPU on dual-GPU laptops
+    stencil: false,                        // no stencil buffer used → skip allocating one
+})
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.shadowMap.enabled = SHADOW.enabled
 renderer.shadowMap.type    = THREE.PCFSoftShadowMap
+renderer.info.autoReset    = false   // minimap renders a 2nd time/frame; we reset manually
 
 // ─────────────────────────────────────────
 // DEBUG FLAGS
@@ -266,6 +278,8 @@ document.body.appendChild(crosshair)
 // ─────────────────────────────────────────
 const INTERACT_RADIUS = 1.5
 const interactables   = []
+const INTERACT_HZ     = 12      // proximity scan rate; 60Hz is wasteful for a prompt
+let   _interactTimer  = 0
 
 // ─────────────────────────────────────────
 // INTERACTABLE ENABLE CONFIG
@@ -321,8 +335,12 @@ let nearestInteractable = null
 const _charPos3 = new THREE.Vector3()
 const _objPos3  = new THREE.Vector3()
 
-function updateInteraction() {
+function updateInteraction(dt = 0) {
     if (!characterBody || interactables.length === 0) return
+
+    _interactTimer += dt
+    if (_interactTimer < 1 / INTERACT_HZ) return
+    _interactTimer = 0
 
     const cp = characterBody.translation()
     _charPos3.set(cp.x, cp.y, cp.z)
@@ -383,6 +401,8 @@ function triggerInteract(entry) {
         case 'piano':  console.log('[interact] piano  — Phase 7'); break
         default: console.log(`[interact] unhandled type: ${entry.type}`); break
     }
+    // Let missions observe this interaction (additive; dormant when disabled).
+    missions.handleInteractTrigger(entry)
 }
 
 // ─────────────────────────────────────────
@@ -641,13 +661,13 @@ function interactMessageBoard(entry) {
 // POINTER LOCK + MOUSE LOOK
 // ─────────────────────────────────────────
 let isLocked = false
-canvas.addEventListener('click', () => { if (!isLocked && !wheelOpen) canvas.requestPointerLock() })
+canvas.addEventListener('click', () => { if (isPlaying() && !isLocked && !wheelOpen) canvas.requestPointerLock() })
 document.addEventListener('pointerlockchange', () => {
     isLocked = document.pointerLockElement === canvas
-    crosshair.style.display = (isLocked && !wheelOpen) ? 'block' : 'none'
+    crosshair.style.display = (isLocked && isPlaying() && !wheelOpen) ? 'block' : 'none'
 })
 document.addEventListener('mousemove', (e) => {
-    if (!isLocked || wheelOpen) return
+    if (!isLocked || wheelOpen || !isPlaying() || mapOpen) return
     targetYaw   -= e.movementX * CAM.yawSensitivity
     targetPitch += e.movementY * CAM.pitchSensitivity
     targetPitch  = THREE.MathUtils.clamp(targetPitch, 0.08, 1.4)
@@ -705,6 +725,36 @@ function isTyping() {
 
 window.addEventListener('keydown', (e) => {
     if (isTyping()) return
+
+    // Full map is a modal overlay: M or Escape closes it; everything else is
+    // swallowed so the world stays frozen underneath while it's open.
+    if (mapOpen) {
+        if (e.code === 'KeyM' || e.code === 'Escape') closeMap()
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        return
+    }
+
+    // Escape: universal pause / back. While PLAYING → close board first, else
+    // pause. menu.js owns Escape while paused / in menus.
+    if (e.code === 'Escape') {
+        if (getState() === STATES.PLAYING) {
+            if (_boardOpen) {
+                _boardOverlay.style.display = 'none'
+                _boardClose.style.display   = 'none'
+                _boardOpen = false
+            } else {
+                setGameState(STATES.PAUSED)
+            }
+            // Consume it so menu.js's keydown doesn't immediately re-toggle.
+            e.stopImmediatePropagation()
+        }
+        return
+    }
+
+    // All other gameplay keys act only while playing.
+    if (getState() !== STATES.PLAYING) return
+
     switch (e.code) {
         case 'KeyW': case 'ArrowUp':    keys.forward  = true; break
         case 'KeyS': case 'ArrowDown':  keys.backward = true; break
@@ -719,14 +769,9 @@ window.addEventListener('keydown', (e) => {
             e.preventDefault()
             jumpBufferTimer = JUMP_BUFFER
             break
-        case 'Escape':
-            if (_boardOpen) {
-                _boardOverlay.style.display = 'none'
-                _boardClose.style.display   = 'none'
-                _boardOpen = false
-            } else {
-                document.exitPointerLock()
-            }
+        case 'KeyM':
+            openMap(false)   // open the full-screen map (Esc/M closes it)
+            e.preventDefault()
             break
     }
 })
@@ -763,9 +808,18 @@ sf.add(SHADOW, 'meshReceiveShadow').name('Mesh Receive').onChange(v => {
     scene.traverse(o => { if (o.isMesh) o.receiveShadow = v })
 })
 
+const sceneFolder = gui.addFolder('Scene')
 const SCENE = { showClouds: false }
-gui.addFolder('Scene').add(SCENE, 'showClouds').name('Show Clouds').onChange(v => {
+sceneFolder.add(SCENE, 'showClouds').name('Show Clouds').onChange(v => {
     cloudObjects.forEach(c => { c.visible = v })
+})
+
+const HUD = { minimap: true }
+sceneFolder.add(HUD, 'minimap').name('Minimap').onChange(v => {
+    minimapVisible = v
+    const show = v && isPlaying()
+    minimapContainer.style.display = show ? '' : 'none'
+    compassLabel.style.display     = show ? '' : 'none'
 })
 
 // Runtime interaction toggles (behaviour only — these never change what is
@@ -1356,6 +1410,11 @@ async function loadCity() {
         console.groupEnd()
 
         scene.add(cityModel)
+
+        // ── Full-map camera (static, city-wide, north-up) ──
+        // The minimap camera is a player-following one set up at module level.
+        setupMapCamera(new THREE.Box3().setFromObject(cityModel))
+
         console.log(`[physics] collider skip — prefix:${collSkipPrefix} mat:${collSkipMat} size:${collSkipSize} included:${collIncluded}`)
         buildCityColliderFromArrays(colliderVerts, colliderIdxs)
         console.log('[city] loaded ✓')
@@ -1387,6 +1446,8 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix()
     renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setScissorTest(false)
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
 })
 
 // ─────────────────────────────────────────
@@ -1417,6 +1478,137 @@ perfPanel.style.cssText = `
 document.body.appendChild(perfPanel)
 let perfFrames = 0, perfAcc = 0
 
+// ─────────────────────────────────────────
+// MINIMAP — GTA-style: a zoomed, top-down ortho camera that FOLLOWS the player
+// and ROTATES so the way you're facing is always "up". Rendered into a 200×200
+// region of the main canvas (after the main render); blip fixed at the centre.
+// ─────────────────────────────────────────
+let   minimapVisible = true
+let   minimapTimer   = 0
+const MINIMAP_FPS    = 20          // update 20×/sec, not 60 — named for easy tuning
+const MINIMAP_SIZE   = 200
+const MINIMAP_LEFT   = 16, MINIMAP_BOTTOM = 16
+const MINIMAP_ZOOM   = 42          // world half-extent shown (smaller = more zoomed in)
+const MINIMAP_HEIGHT = 250         // camera height above the player
+const MAP_ZOOM       = 0.6         // full-map extent factor (<1 = more zoomed in)
+const _blipVec       = new THREE.Vector3()
+let   _mainTris = 0, _mainCalls = 0   // snapshot of the MAIN render for perfPanel
+
+// Follows the player every refresh (position + heading set in renderMinimap).
+const minimapCamera  = new THREE.OrthographicCamera(
+    -MINIMAP_ZOOM, MINIMAP_ZOOM, MINIMAP_ZOOM, -MINIMAP_ZOOM, 0.1, 2000)
+
+// Full-screen MAP (the "M" / pause-menu map): a static, city-wide top-down view.
+// Camera is built once the city box is known (see loadCity → setupMapCamera).
+let   mapCamera = null
+let   mapOpen   = false
+let   _mapFromPause = false         // remember to restore the pause menu on close
+const _mapTarget = new THREE.Vector3()
+
+// Container is a SQUARE: its radial-gradient masks the map's corners (the GL
+// region lives in the main canvas and can't be CSS-clipped), a child ring draws
+// the circle, and the overlay canvas holds the blip.
+const minimapContainer = document.createElement('div')
+minimapContainer.id = 'minimap'
+minimapContainer.style.cssText = `
+    position:fixed;bottom:${MINIMAP_BOTTOM}px;left:${MINIMAP_LEFT}px;
+    width:${MINIMAP_SIZE}px;height:${MINIMAP_SIZE}px;z-index:150;pointer-events:none;
+    background:radial-gradient(circle 100px at 50% 50%, transparent 0 98px, #0a0a0f 99px);`
+
+const _minimapRing = document.createElement('div')
+_minimapRing.style.cssText = `
+    position:absolute;inset:0;border-radius:50%;
+    border:2px solid rgba(255,255,255,0.3);pointer-events:none;`
+minimapContainer.appendChild(_minimapRing)
+
+const minimapOverlay = document.createElement('canvas')
+minimapOverlay.id = 'minimap-overlay'
+minimapOverlay.width = MINIMAP_SIZE
+minimapOverlay.height = MINIMAP_SIZE
+minimapOverlay.style.cssText = `position:absolute;top:0;left:0;width:${MINIMAP_SIZE}px;height:${MINIMAP_SIZE}px;pointer-events:none;`
+minimapContainer.appendChild(minimapOverlay)
+document.body.appendChild(minimapContainer)
+const overlayCtx = minimapOverlay.getContext('2d')
+
+// The top-down view is rendered into this offscreen target at MINIMAP_FPS, then
+// blitted into the canvas corner EVERY frame (one draw call). Blitting every
+// frame is required because the main render clears the whole canvas at 60fps —
+// rendering the heavy scene straight into a scissor region only at 20fps would
+// leave the corner showing the main view on the other 40 frames.
+const _mmDPR     = Math.min(window.devicePixelRatio, 2)
+const minimapRT  = new THREE.WebGLRenderTarget(MINIMAP_SIZE * _mmDPR, MINIMAP_SIZE * _mmDPR)
+minimapRT.texture.colorSpace = THREE.SRGBColorSpace   // already display-encoded by the RT render
+
+const _mmQuadScene = new THREE.Scene()
+const _mmQuadCam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+const _mmQuad      = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.MeshBasicMaterial({ map: minimapRT.texture, depthTest: false, depthWrite: false, toneMapped: false }),
+)
+_mmQuadScene.add(_mmQuad)
+
+const compassLabel = document.createElement('div')
+compassLabel.textContent = 'N'
+compassLabel.style.cssText = `
+    position:fixed;bottom:${MINIMAP_BOTTOM + MINIMAP_SIZE + 6}px;left:${MINIMAP_LEFT + MINIMAP_SIZE / 2 - 3}px;
+    color:#fff;font:11px monospace;z-index:151;pointer-events:none;`
+document.body.appendChild(compassLabel)
+
+// ── Full-screen MAP overlay ────────────────────────────────
+// A dimmed full-screen layer with a centred square "window" the city-wide view
+// renders through (box-shadow dims everything outside the square — see below).
+const mapOverlay = document.createElement('div')
+mapOverlay.id = 'fullmap'
+mapOverlay.style.cssText = `
+    position:fixed;inset:0;z-index:210;display:none;pointer-events:auto;
+    font:13px 'Courier New',monospace;color:#e8d5a3;`
+mapOverlay.innerHTML = `
+    <div class="map-window" style="
+        position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+        border:2px solid rgba(232,213,163,0.6);border-radius:4px;
+        box-shadow:0 0 0 9999px rgba(0,0,0,0.85);">
+        <div class="map-blip" style="
+            position:absolute;left:50%;top:50%;width:0;height:0;
+            border-left:7px solid transparent;border-right:7px solid transparent;
+            border-bottom:14px solid #ffffff;filter:drop-shadow(0 0 1px #000);
+            transform:translate(-50%,-50%);"></div>
+    </div>
+    <div style="position:absolute;top:18px;left:50%;transform:translateX(-50%);
+        letter-spacing:3px;font-size:16px;">MAP</div>
+    <div style="position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
+        opacity:0.7;">[M] or [Esc] to close</div>`
+document.body.appendChild(mapOverlay)
+const mapWindow = mapOverlay.querySelector('.map-window')
+const mapBlip   = mapOverlay.querySelector('.map-blip')
+
+// Built once, from the city's bounding box — a fixed, north-up, city-wide camera.
+function setupMapCamera(box) {
+    const size   = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    const halfW  = size.x / 2 * MAP_ZOOM
+    const halfD  = size.z / 2 * MAP_ZOOM
+    mapCamera = new THREE.OrthographicCamera(-halfW, halfW, halfD, -halfD, 0.1, 5000)
+    mapCamera.up.set(0, 0, -1)                 // north (−z) up
+    mapCamera.position.set(center.x, box.max.y + 500, center.z)
+    mapCamera.lookAt(center.x, center.y, center.z)
+    mapCamera.updateProjectionMatrix()
+}
+
+function openMap(fromPause = false) {
+    if (!mapCamera) return
+    _mapFromPause = fromPause
+    mapOpen = true
+    mapOverlay.style.display = 'block'
+    // Freeze the player and free the cursor while the map is up.
+    keys.forward = keys.backward = keys.left = keys.right = keys.walk = false
+    if (isLocked) document.exitPointerLock()
+}
+function closeMap() {
+    mapOpen = false
+    mapOverlay.style.display = 'none'
+    if (_mapFromPause) { _mapFromPause = false; showPauseMenu() }
+}
+
 function updatePerfPanel(dt) {
     perfFrames++; perfAcc += dt
     if (perfFrames >= 60) {
@@ -1425,7 +1617,7 @@ function updatePerfPanel(dt) {
         const info = renderer.info
         perfPanel.innerHTML =
             `FPS: ${fps}  |  ${ms} ms<br>` +
-            `Tris: ${(info.render.triangles/1000).toFixed(0)}k  Draws: ${info.render.calls}<br>` +
+            `Tris: ${(_mainTris/1000).toFixed(0)}k  Draws: ${_mainCalls}<br>` +
             `Geoms: ${info.memory.geometries}  Tex: ${info.memory.textures}`
         perfFrames = 0; perfAcc = 0
     }
@@ -1460,12 +1652,106 @@ function stepPhysics(dt) {
     if (steps >= MAX_SUBSTEPS) physicsAccumulator = 0
 }
 
+// ─────────────────────────────────────────
+// MINIMAP RENDER — runs AFTER the main render. The heavy top-down scene render
+// goes into an offscreen target at MINIMAP_FPS; the cached target is then blitted
+// into the canvas corner every frame (the main render clears the whole canvas).
+// ─────────────────────────────────────────
+function renderMinimap(delta) {
+    if (!minimapVisible || !isPlaying() || mapOpen) return
+
+    // Refresh the offscreen top-down view at MINIMAP_FPS (the expensive part).
+    minimapTimer += delta
+    if (minimapTimer >= 1 / MINIMAP_FPS) {
+        minimapTimer = 0
+        // Follow the player and rotate so their facing direction points "up".
+        // up = camera-forward (horizontal) → that world direction becomes screen-up.
+        minimapCamera.position.set(_smoothPos.x, _smoothPos.y + MINIMAP_HEIGHT, _smoothPos.z)
+        minimapCamera.up.set(-Math.sin(camYaw), 0, -Math.cos(camYaw))
+        _mapTarget.set(_smoothPos.x, _smoothPos.y, _smoothPos.z)
+        minimapCamera.lookAt(_mapTarget)
+
+        const prevFog = scene.fog
+        scene.fog = null                   // FogExp2 would wash out the top-down view
+        renderer.setRenderTarget(minimapRT)
+        renderer.clear()
+        renderer.render(scene, minimapCamera)
+        renderer.setRenderTarget(null)
+        scene.fog = prevFog
+        renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+    }
+
+    // Blit the cached target into the canvas corner EVERY frame — one draw call,
+    // so it survives the main render's full-canvas clear.
+    renderer.autoClear = false
+    renderer.setViewport(MINIMAP_LEFT, MINIMAP_BOTTOM, MINIMAP_SIZE, MINIMAP_SIZE)
+    renderer.setScissor (MINIMAP_LEFT, MINIMAP_BOTTOM, MINIMAP_SIZE, MINIMAP_SIZE)
+    renderer.setScissorTest(true)
+    renderer.render(_mmQuadScene, _mmQuadCam)
+    renderer.setScissorTest(false)
+    renderer.autoClear = true
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+
+    // Player blip — the map rotates under it, so the arrow is pinned to the
+    // centre, always pointing up (the direction the camera is facing).
+    overlayCtx.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE)
+    overlayCtx.save()
+    overlayCtx.translate(MINIMAP_SIZE / 2, MINIMAP_SIZE / 2)
+    overlayCtx.beginPath()
+    overlayCtx.moveTo(0, -10)              // nose
+    overlayCtx.lineTo(-5, 5)
+    overlayCtx.lineTo(5, 5)
+    overlayCtx.closePath()
+    overlayCtx.fillStyle   = '#ffffff'
+    overlayCtx.strokeStyle = 'rgba(0,0,0,0.6)'
+    overlayCtx.lineWidth   = 1.5
+    overlayCtx.fill()
+    overlayCtx.stroke()
+    overlayCtx.restore()
+}
+
+// ─────────────────────────────────────────
+// FULL MAP RENDER — while open, renders the static city-wide view into a large
+// centred square of the canvas every frame (it is only open when paused-ish, so
+// the per-frame full render is fine). A DOM blip is positioned by projection.
+// ─────────────────────────────────────────
+function renderFullMap() {
+    if (!mapOpen || !mapCamera) return
+
+    const S = Math.min(window.innerWidth, window.innerHeight) * 0.8
+    const x = (window.innerWidth  - S) / 2
+    const y = (window.innerHeight - S) / 2   // symmetric → same in bottom-origin GL coords
+    mapWindow.style.width  = `${S}px`
+    mapWindow.style.height = `${S}px`
+
+    const prevFog = scene.fog
+    scene.fog = null
+    renderer.autoClear = false
+    renderer.setViewport(x, y, S, S)
+    renderer.setScissor (x, y, S, S)
+    renderer.setScissorTest(true)
+    renderer.clear()
+    renderer.render(scene, mapCamera)
+    renderer.setScissorTest(false)
+    renderer.autoClear = true
+    scene.fog = prevFog
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+
+    // Player blip (DOM, positioned inside the centred window).
+    _blipVec.copy(_smoothPos).project(mapCamera)
+    mapBlip.style.left = `${(_blipVec.x * 0.5 + 0.5) * S}px`
+    mapBlip.style.top  = `${(1 - (_blipVec.y * 0.5 + 0.5)) * S}px`
+    mapBlip.style.transform = `translate(-50%,-50%) rotate(${camYaw}rad)`
+}
+
 function tick() {
     requestAnimationFrame(tick)
     const delta = Math.min(clock.getDelta(), 0.1)
     updatePerfPanel(delta)
 
-    if (world && characterBody) {
+    const playing = isPlaying()
+
+    if (playing && world && characterBody) {
         stepPhysics(delta)
 
         const alpha = THREE.MathUtils.clamp(physicsAccumulator / FIXED_TIME_STEP, 0, 1)
@@ -1486,50 +1772,210 @@ function tick() {
         syncCamera(_smoothPos)
 
         updateAnimation(delta)
-        updateInteraction()
+        updateInteraction(delta)
         updateDoorAnims(delta)   // syncs each door's collider while it animates
         updatePropAnims(delta)
         updateDoorHelpers()
+        missions.updateMissions(delta)
+    } else if (world && characterBody && characterModel) {
+        // Paused / dialogue / menu (with world loaded): hold the camera on the
+        // frozen frame; no physics step, no animation advance.
+        syncCamera(_smoothPos)
     }
 
-    if (mixer) mixer.update(delta)
+    if (mixer && playing) mixer.update(delta)
+
+    // Main render (full viewport), then the minimap region on top.
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+    renderer.setScissorTest(false)
+    renderer.info.reset()
     renderer.render(scene, camera)
+    _mainTris  = renderer.info.render.triangles   // snapshot before the minimap render
+    _mainCalls = renderer.info.render.calls
+    renderMinimap(delta)
+    renderFullMap()
 }
 
 // ─────────────────────────────────────────
-// BOOTSTRAP
+// GAME SHELL — subtitle, HUD visibility, lazy world load, state wiring
 // ─────────────────────────────────────────
-async function init() {
-    setLoading(15); await initPhysics()
-    setLoading(30); await loadCity()
-    setLoading(50); await loadCharacter()
-    setLoading(100)
 
-    // Frustum cull audit
-    let bad = 0
-    cityModel?.traverse(c => { if (c.isMesh && !c.frustumCulled) { console.warn(`[cull] frustumCulled=false: ${c.name}`); bad++ } })
-    console.log(bad ? `[cull] ✗ ${bad} violations` : '[cull] ✓ all good')
+// Subtitle / objective toast (used by worldApi.showSubtitle)
+const _subtitle = document.createElement('div')
+_subtitle.style.cssText = `
+    position:fixed;bottom:14%;left:50%;transform:translateX(-50%);
+    background:rgba(0,0,0,0.6);color:#e8d5a3;font:14px/1.4 'Courier New',monospace;
+    padding:8px 18px;border-radius:4px;pointer-events:none;z-index:202;display:none;
+    border:1px solid rgba(139,105,20,0.5);text-align:center;max-width:60%;`
+document.body.appendChild(_subtitle)
+let _subtitleTimer = null
+function showSubtitle(text, ms = 3500) {
+    _subtitle.textContent = text
+    _subtitle.style.display = 'block'
+    clearTimeout(_subtitleTimer)
+    _subtitleTimer = setTimeout(() => { _subtitle.style.display = 'none' }, ms)
+}
 
-    // Build door colliders (swinging doors are skipped inside createDoorCollider)
-    for (const entry of interactables) {
-        if (entry.type === 'door' || entry.type === 'door_vault' || entry.type === 'door_swinging') {
-            createDoorCollider(entry)
-        }
+// World HUD elements that should only show while playing.
+const _hudInstructions = document.getElementById('instructions')
+function setWorldHudVisible(v) {
+    if (_hudInstructions) _hudInstructions.style.display = v ? '' : 'none'
+    perfPanel.style.display = v ? '' : 'none'
+    const showMap = v && minimapVisible
+    minimapContainer.style.display = showMap ? '' : 'none'
+    compassLabel.style.display     = showMap ? '' : 'none'
+    if (!v) {
+        crosshair.style.display       = 'none'
+        _interactPrompt.style.display = 'none'
+        _boardOverlay.style.display   = 'none'
+        _boardClose.style.display     = 'none'
+        _boardOpen = false
     }
-
-    // Per-item GUI checkboxes (interactables are now populated)
-    buildInteractableItemGUI()
-
-    if (cityModel) autoSpawn(cityModel)
-
-    const p = characterBody.translation()
-    _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); hasPrevState = true
-
-    if (loadingScreen) loadingScreen.classList.add('hidden')
-    tick()
 }
 
-init().catch(err => {
-    console.error('[init] fatal', err)
-    if (animLabel) animLabel.textContent = 'Error — see console'
+// ── Lazy heavy world load (idempotent) ─────────────────────
+let _worldReady    = false
+let _worldStarting = null
+
+async function startWorld() {
+    if (_worldReady) return true
+    if (_worldStarting) return _worldStarting
+    _worldStarting = (async () => {
+        if (loadingScreen) loadingScreen.classList.remove('hidden')
+        setLoading(15); await initPhysics()
+        setLoading(30); const cityOk = await loadCity()
+        setLoading(50); await loadCharacter()
+        setLoading(100)
+
+        // Frustum cull audit
+        let bad = 0
+        cityModel?.traverse(c => { if (c.isMesh && !c.frustumCulled) { console.warn(`[cull] frustumCulled=false: ${c.name}`); bad++ } })
+        console.log(bad ? `[cull] ✗ ${bad} violations` : '[cull] ✓ all good')
+
+        // Door colliders (swinging doors skipped inside createDoorCollider)
+        for (const entry of interactables) {
+            if (entry.type === 'door' || entry.type === 'door_vault' || entry.type === 'door_swinging') {
+                createDoorCollider(entry)
+            }
+        }
+
+        // Per-item GUI checkboxes — append-only, so run exactly once.
+        buildInteractableItemGUI()
+
+        if (cityModel) autoSpawn(cityModel)
+        const p = characterBody.translation()
+        _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
+
+        if (loadingScreen) loadingScreen.classList.add('hidden')
+        _worldReady = true
+        return cityOk
+    })()
+    try { return await _worldStarting } finally { _worldStarting = null }
+}
+
+// New Game when the world already exists: respawn instead of reloading.
+function resetWorldToDefaultSpawn() {
+    if (cityModel) autoSpawn(cityModel)
+    const p = characterBody.translation()
+    _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
+    camYaw = targetYaw = 0
+    camPitch = targetPitch = 0.4
+}
+
+// ── Save bridge (script.js owns the physics body) ──────────
+function captureSaveFromWorld() {
+    const p = characterBody.translation()
+    return {
+        position:    { x: p.x, y: p.y, z: p.z },
+        camYaw:      targetYaw,
+        camPitch:    targetPitch,
+        ...missions.serializeProgress(),
+        missionName: missions.getActiveMission()?.name ?? 'Free Roam',
+        location:    'Dead Mesa',
+    }
+}
+
+function applySaveToWorld(d) {
+    characterBody.setTranslation({ x: d.position.x, y: d.position.y, z: d.position.z }, true)
+    characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    targetYaw   = camYaw   = d.camYaw   ?? 0
+    targetPitch = camPitch = d.camPitch ?? 0.4
+    const p = characterBody.translation()
+    _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true   // reseed interp
+    missions.restoreProgress(d)
+}
+
+// ── Hooks handed to the menu ───────────────────────────────
+const hooks = {
+    async startNewGame() {
+        try { await startWorld() } catch (err) { console.error('[shell] startWorld failed', err) }
+        resetWorldToDefaultSpawn()
+        missions.restoreProgress(null)
+        setGameState(STATES.CUTSCENE)
+        playIntro(() => setGameState(STATES.PLAYING))
+    },
+    async continueGame() {
+        const slot = saveSystem.mostRecentSlot()
+        if (slot != null) await hooks.loadSlot(slot)
+    },
+    async loadSlot(slot) {
+        const data = saveSystem.load(slot)
+        if (!data) return
+        try { await startWorld() } catch (err) { console.error('[shell] startWorld failed', err) }
+        applySaveToWorld(data)
+        setGameState(STATES.PLAYING)   // loads skip the intro
+    },
+    saveToSlot(slot) {
+        return saveSystem.save(slot, captureSaveFromWorld())
+    },
+    resume()       { setGameState(STATES.PLAYING) },
+    quitToMenu()   { setGameState(STATES.MAINMENU) },
+    openSettings() { gui.show() },
+    closeSettings(){ gui.hide() },
+    openMap()      { hideAllMenus(); openMap(true) },   // from pause menu; Esc/M returns
+}
+
+// ── Mission → world bridge ─────────────────────────────────
+const worldApi = {
+    getPlayerPos() { const p = characterBody.translation(); return { x: p.x, y: p.y, z: p.z } },
+    teleport(x, y, z) {
+        characterBody.setTranslation({ x, y, z }, true)
+        characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        const p = characterBody.translation()
+        _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); hasPrevState = true
+    },
+    distanceTo(x, y, z) { const p = characterBody.translation(); return Math.hypot(p.x - x, p.y - y, p.z - z) },
+    showSubtitle,
+}
+
+// ── State-driven side effects ──────────────────────────────
+onStateChange((next) => {
+    const playing = next === STATES.PLAYING
+    setWorldHudVisible(playing)
+    if (!playing) {
+        keys.forward = keys.backward = keys.left = keys.right = keys.walk = false
+        if (characterBody) characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        if (isLocked) document.exitPointerLock()
+    }
 })
+
+// ─────────────────────────────────────────
+// BOOTSTRAP — synchronous shell; the menu shows instantly,
+// the 39MB world is loaded lazily on New Game / Continue.
+// ─────────────────────────────────────────
+function bootShell() {
+    if (loadingScreen) loadingScreen.classList.add('hidden')   // reused later for world load
+    gui.hide()                                                 // Settings panel hidden behind the menu
+    setWorldHudVisible(false)
+
+    missions.initMissions(worldApi)
+    initCutscene()
+    initMenu(hooks)
+
+    // Initial state is already MAINMENU, so show it explicitly (setState would no-op).
+    showMainMenu()
+
+    tick()   // single rAF loop for the whole app
+}
+
+bootShell()
