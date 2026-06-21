@@ -267,10 +267,7 @@ scene.add(sunLight)
 // CROSSHAIR
 // ─────────────────────────────────────────
 const crosshair = document.createElement('div')
-crosshair.style.cssText = `
-    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-    width:6px;height:6px;background:rgba(255,255,255,0.85);
-    border-radius:50%;pointer-events:none;z-index:200;display:none;`
+crosshair.id = 'crosshair'
 document.body.appendChild(crosshair)
 
 // ─────────────────────────────────────────
@@ -324,11 +321,7 @@ function isInteractableEnabled(name, type) {
 const INTERACT_ACTIVE = { ...INTERACTABLE_ENABLED }
 
 const _interactPrompt = document.createElement('div')
-_interactPrompt.style.cssText = `
-    position:fixed;bottom:22%;left:50%;transform:translateX(-50%);
-    background:rgba(0,0,0,0.65);color:#fff;font:13px/1 monospace;
-    padding:7px 16px;border-radius:4px;pointer-events:none;z-index:201;display:none;
-    border:1px solid rgba(255,255,255,0.15);letter-spacing:0.04em;`
+_interactPrompt.id = 'interact-prompt'
 document.body.appendChild(_interactPrompt)
 
 let nearestInteractable = null
@@ -625,20 +618,11 @@ const BOARD_MESSAGES = [
 ]
 
 const _boardOverlay = document.createElement('div')
-_boardOverlay.style.cssText = `
-    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-    background:rgba(20,12,4,0.92);color:#e8d5a3;
-    font:15px/1.7 'Courier New',monospace;padding:28px 36px;border-radius:6px;
-    border:2px solid #8b6914;pointer-events:none;z-index:400;
-    display:none;white-space:pre-line;text-align:center;max-width:320px;
-    box-shadow:0 0 24px rgba(0,0,0,0.8);`
+_boardOverlay.id = 'board-overlay'
 document.body.appendChild(_boardOverlay)
 
 const _boardClose = document.createElement('div')
-_boardClose.style.cssText = `
-    position:fixed;bottom:28%;left:50%;transform:translateX(-50%);
-    background:rgba(0,0,0,0.6);color:#fff;font:12px/1 monospace;
-    padding:5px 14px;border-radius:4px;pointer-events:none;z-index:401;display:none;`
+_boardClose.id = 'board-close'
 _boardClose.textContent = '[E] Close'
 document.body.appendChild(_boardClose)
 
@@ -1472,9 +1456,7 @@ function syncCamera(charPos) {
 // PERF PANEL
 // ─────────────────────────────────────────
 const perfPanel = document.createElement('div')
-perfPanel.style.cssText = `
-    position:fixed;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#0f0;
-    font:11px/1.5 monospace;padding:6px 10px;border-radius:4px;pointer-events:none;z-index:300;`
+perfPanel.id = 'perf-panel'
 document.body.appendChild(perfPanel)
 let perfFrames = 0, perfAcc = 0
 
@@ -1490,7 +1472,7 @@ const MINIMAP_SIZE   = 200
 const MINIMAP_LEFT   = 16, MINIMAP_BOTTOM = 16
 const MINIMAP_ZOOM   = 42          // world half-extent shown (smaller = more zoomed in)
 const MINIMAP_HEIGHT = 250         // camera height above the player
-const MAP_ZOOM       = 0.6         // full-map extent factor (<1 = more zoomed in)
+const MAP_ZOOM       = 0.2         // full-map extent factor (<1 = more zoomed in)
 const _blipVec       = new THREE.Vector3()
 let   _mainTris = 0, _mainCalls = 0   // snapshot of the MAIN render for perfPanel
 
@@ -1510,22 +1492,15 @@ const _mapTarget = new THREE.Vector3()
 // the circle, and the overlay canvas holds the blip.
 const minimapContainer = document.createElement('div')
 minimapContainer.id = 'minimap'
-minimapContainer.style.cssText = `
-    position:fixed;bottom:${MINIMAP_BOTTOM}px;left:${MINIMAP_LEFT}px;
-    width:${MINIMAP_SIZE}px;height:${MINIMAP_SIZE}px;z-index:150;pointer-events:none;
-    background:radial-gradient(circle 100px at 50% 50%, transparent 0 98px, #0a0a0f 99px);`
 
 const _minimapRing = document.createElement('div')
-_minimapRing.style.cssText = `
-    position:absolute;inset:0;border-radius:50%;
-    border:2px solid rgba(255,255,255,0.3);pointer-events:none;`
+_minimapRing.className = 'minimap-ring'
 minimapContainer.appendChild(_minimapRing)
 
 const minimapOverlay = document.createElement('canvas')
 minimapOverlay.id = 'minimap-overlay'
 minimapOverlay.width = MINIMAP_SIZE
 minimapOverlay.height = MINIMAP_SIZE
-minimapOverlay.style.cssText = `position:absolute;top:0;left:0;width:${MINIMAP_SIZE}px;height:${MINIMAP_SIZE}px;pointer-events:none;`
 minimapContainer.appendChild(minimapOverlay)
 document.body.appendChild(minimapContainer)
 const overlayCtx = minimapOverlay.getContext('2d')
@@ -1548,10 +1523,8 @@ const _mmQuad      = new THREE.Mesh(
 _mmQuadScene.add(_mmQuad)
 
 const compassLabel = document.createElement('div')
+compassLabel.id = 'compass-label'
 compassLabel.textContent = 'N'
-compassLabel.style.cssText = `
-    position:fixed;bottom:${MINIMAP_BOTTOM + MINIMAP_SIZE + 6}px;left:${MINIMAP_LEFT + MINIMAP_SIZE / 2 - 3}px;
-    color:#fff;font:11px monospace;z-index:151;pointer-events:none;`
 document.body.appendChild(compassLabel)
 
 // ── Full-screen MAP overlay ────────────────────────────────
@@ -1559,24 +1532,12 @@ document.body.appendChild(compassLabel)
 // renders through (box-shadow dims everything outside the square — see below).
 const mapOverlay = document.createElement('div')
 mapOverlay.id = 'fullmap'
-mapOverlay.style.cssText = `
-    position:fixed;inset:0;z-index:210;display:none;pointer-events:auto;
-    font:13px 'Courier New',monospace;color:#e8d5a3;`
 mapOverlay.innerHTML = `
-    <div class="map-window" style="
-        position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-        border:2px solid rgba(232,213,163,0.6);border-radius:4px;
-        box-shadow:0 0 0 9999px rgba(0,0,0,0.85);">
-        <div class="map-blip" style="
-            position:absolute;left:50%;top:50%;width:0;height:0;
-            border-left:7px solid transparent;border-right:7px solid transparent;
-            border-bottom:14px solid #ffffff;filter:drop-shadow(0 0 1px #000);
-            transform:translate(-50%,-50%);"></div>
+    <div class="map-window">
+        <div class="map-blip"></div>
     </div>
-    <div style="position:absolute;top:18px;left:50%;transform:translateX(-50%);
-        letter-spacing:3px;font-size:16px;">MAP</div>
-    <div style="position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
-        opacity:0.7;">[M] or [Esc] to close</div>`
+    <div class="map-title">MAP</div>
+    <div class="map-hint">[M] or [Esc] to close</div>`
 document.body.appendChild(mapOverlay)
 const mapWindow = mapOverlay.querySelector('.map-window')
 const mapBlip   = mapOverlay.querySelector('.map-blip')
@@ -1802,11 +1763,7 @@ function tick() {
 
 // Subtitle / objective toast (used by worldApi.showSubtitle)
 const _subtitle = document.createElement('div')
-_subtitle.style.cssText = `
-    position:fixed;bottom:14%;left:50%;transform:translateX(-50%);
-    background:rgba(0,0,0,0.6);color:#e8d5a3;font:14px/1.4 'Courier New',monospace;
-    padding:8px 18px;border-radius:4px;pointer-events:none;z-index:202;display:none;
-    border:1px solid rgba(139,105,20,0.5);text-align:center;max-width:60%;`
+_subtitle.id = 'subtitle'
 document.body.appendChild(_subtitle)
 let _subtitleTimer = null
 function showSubtitle(text, ms = 3500) {

@@ -574,6 +574,213 @@ kbd {
 @keyframes cs-white { 0% { opacity: 0 } 40% { opacity: 1 } 100% { opacity: 0 } }
 
 /* ═══════════════════════════════════════════
+   RUNTIME-CREATED HUD ELEMENTS
+   These nodes are created in script.js via document.createElement.
+   Their static styling lives here; JS only toggles display / dynamic
+   geometry (map window size, blip position) at runtime.
+═══════════════════════════════════════════ */
+
+/* Crosshair — centre dot, shown only while pointer-locked */
+#crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 6px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.85);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 200;
+    display: none;
+}
+
+/* Interaction prompt — "[E] Open Door" near bottom-centre */
+#interact-prompt {
+    position: fixed;
+    bottom: 22%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    font: 13px/1 monospace;
+    padding: 7px 16px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 201;
+    display: none;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    letter-spacing: 0.04em;
+}
+
+/* Message board — full reading overlay + its close hint */
+#board-overlay {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(20, 12, 4, 0.92);
+    color: #e8d5a3;
+    font: 15px/1.7 'Courier New', monospace;
+    padding: 28px 36px;
+    border-radius: 6px;
+    border: 2px solid #8b6914;
+    pointer-events: none;
+    z-index: 400;
+    display: none;
+    white-space: pre-line;
+    text-align: center;
+    max-width: 320px;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.8);
+}
+
+#board-close {
+    position: fixed;
+    bottom: 28%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font: 12px/1 monospace;
+    padding: 5px 14px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 401;
+    display: none;
+}
+
+/* Perf panel — FPS / tris / draws, bottom-right */
+#perf-panel {
+    position: fixed;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #0f0;
+    font: 11px/1.5 monospace;
+    padding: 6px 10px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 300;
+}
+
+/* Minimap — GTA-style circular radar, bottom-left.
+   NOTE: sizes/positions mirror the JS constants MINIMAP_SIZE (200),
+   MINIMAP_LEFT/MINIMAP_BOTTOM (16) used for the GL viewport math in
+   script.js. Keep them in sync if those constants change. */
+#minimap {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    width: 200px;
+    height: 200px;
+    z-index: 150;
+    pointer-events: none;
+    background: radial-gradient(circle 100px at 50% 50%, transparent 0 98px, #0a0a0f 99px);
+}
+
+.minimap-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    pointer-events: none;
+}
+
+#minimap-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 200px;
+    height: 200px;
+    pointer-events: none;
+}
+
+/* Compass label — "N" centred above the minimap.
+   bottom = MINIMAP_BOTTOM + MINIMAP_SIZE + 6 = 222px
+   left   = MINIMAP_LEFT + MINIMAP_SIZE/2 - 3 = 113px */
+#compass-label {
+    position: fixed;
+    bottom: 222px;
+    left: 113px;
+    color: #fff;
+    font: 11px monospace;
+    z-index: 151;
+    pointer-events: none;
+}
+
+/* ── Full-screen MAP overlay ── */
+#fullmap {
+    position: fixed;
+    inset: 0;
+    z-index: 210;
+    display: none;
+    pointer-events: auto;
+    font: 13px 'Courier New', monospace;
+    color: #e8d5a3;
+}
+
+/* width/height set per-frame in renderFullMap() */
+#fullmap .map-window {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border: 2px solid rgba(232, 213, 163, 0.6);
+    border-radius: 4px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
+}
+
+/* transform (rotation) updated per-frame in renderFullMap() */
+#fullmap .map-blip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 14px solid #ffffff;
+    filter: drop-shadow(0 0 1px #000);
+    transform: translate(-50%, -50%);
+}
+
+#fullmap .map-title {
+    position: absolute;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    letter-spacing: 3px;
+    font-size: 16px;
+}
+
+#fullmap .map-hint {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 0.7;
+}
+
+/* Subtitle / objective toast */
+#subtitle {
+    position: fixed;
+    bottom: 14%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.6);
+    color: #e8d5a3;
+    font: 14px/1.4 'Courier New', monospace;
+    padding: 8px 18px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 202;
+    display: none;
+    border: 1px solid rgba(139, 105, 20, 0.5);
+    text-align: center;
+    max-width: 60%;
+}
+
+/* ═══════════════════════════════════════════
    UTILITY: hidden class
 ═══════════════════════════════════════════ */
 .hidden {
