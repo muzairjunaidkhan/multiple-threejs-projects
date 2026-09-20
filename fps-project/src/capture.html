@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shot Capture — dev only</title>
+
+    <!-- NOTE: style.css is deliberately NOT linked. This page must stay
+         independent of the game's HUD styling. -->
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            width: 100%; height: 100%;
+            background: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            color: #e8d5a3;
+        }
+
+        /* The drawing buffer is permanently 1920×1080 (see capture.js); this
+           letterbox just scales it to fit. Preview framing == export framing. */
+        #stage {
+            position: fixed; inset: 0;
+            display: grid; place-items: center;
+        }
+        #frame {
+            position: relative;
+            width:  min(100vw, calc(100vh * 16 / 9));
+            height: min(100vh, calc(100vw * 9 / 16));
+            container-type: size;
+        }
+        #canvas { display: block; width: 100%; height: 100%; }
+
+        /* ── Safe-zone preview: what actually sits on top of these images
+              on the real loading screen (style.css .loading-slide). ────────── */
+        #safe { position: absolute; inset: 0; pointer-events: none; display: none; }
+        #safe.on { display: block; }
+
+        .safe-grad {
+            position: absolute; inset: 0;
+            background: linear-gradient(180deg, rgba(0,0,0,0.10) 0%, rgba(0,0,0,0.60) 100%);
+        }
+        /* @keyframes loadingSlide zooms 1.00 → 1.08, eating ~3.7% of every edge. */
+        .safe-kb {
+            position: absolute; inset: 3.7%;
+            outline: 1px dashed rgba(255,255,255,0.45);
+        }
+        .safe-caption {
+            position: absolute; left: 7%; bottom: 20%;
+            max-width: 62%;
+            font-weight: 700;
+            font-size: 4cqw;
+            letter-spacing: 0.06em;
+            color: #f3e6c4;
+            text-transform: uppercase;
+            text-shadow: 0 2px 20px rgba(0,0,0,0.85);
+        }
+
+        /* Centred variant — the menu panel and the cutscene cards both sit in
+           the middle of the frame, not bottom-left like a loading caption. */
+        .safe-center {
+            position: absolute; left: 50%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 70%;
+            text-align: center;
+            font-size: 2.6cqw;
+            letter-spacing: 0.16em;
+            color: #e8d5a3;
+            text-shadow: 0 2px 8px #000;
+            border: 1px dashed rgba(232,213,163,0.35);
+            padding: 6% 2%;
+        }
+        #safe[data-overlay="slide"]  .safe-center  { display: none; }
+        #safe[data-overlay="center"] .safe-caption { display: none; }
+
+        /* ── HUD (DOM overlay — can never leak into the JPEG) ─────────────── */
+        #hud, #log {
+            position: fixed;
+            background: rgba(0,0,0,0.72);
+            border: 1px solid rgba(232,213,163,0.22);
+            padding: 10px 14px;
+            font-size: 12px;
+            line-height: 1.55;
+            white-space: pre;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #hud { top: 12px; left: 12px; }
+        #log { right: 12px; bottom: 12px; min-width: 260px; color: #9fd6a0; }
+        #hud.off, #log.off { display: none; }
+
+        .k   { color: #f3e6c4; font-weight: 700; }
+        .dim { color: #8a7a55; }
+        .warn{ color: #e0a35c; }
+        .err { color: #e06c5c; }
+
+        #banner {
+            position: fixed; inset: 0;
+            display: grid; place-items: center;
+            font-size: 18px; letter-spacing: 0.3em;
+            background: rgba(0,0,0,0.9);
+            z-index: 20;
+        }
+        #banner.off { display: none; }
+    </style>
+</head>
+<body>
+    <div id="stage">
+        <div id="frame">
+            <canvas id="canvas"></canvas>
+            <div id="safe" data-overlay="slide">
+                <div class="safe-grad"></div>
+                <div class="safe-kb"></div>
+                <div class="safe-caption">DEAD MESA</div>
+                <div class="safe-center">DEAD MESA</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="hud">booting…</div>
+    <div id="log" class="off"></div>
+    <div id="banner">LOADING MAP…</div>
+
+    <script type="module" src="./capture.js"></script>
+</body>
+</html>
