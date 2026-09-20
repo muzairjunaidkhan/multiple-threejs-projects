@@ -1,4 +1,5 @@
 import restart from 'vite-plugin-restart'
+import shotWriter from './vite-plugin-shot-writer.js'
 
 export default {
     root: 'src/',                          // Sources files (typically where index.html is)
@@ -16,6 +17,16 @@ export default {
     },
     plugins:
     [
-        restart({ restart: [ '../static/**', ] }) // Restart server on static file change
+        // Restart server on static asset change. Deliberately NOT '../static/**':
+        // /capture.html writes slide-N.jpg into static/loading/, and a matching glob
+        // would restart the server mid-export, killing the remaining POSTs and forcing
+        // a reload (= another 40MB glTF load).
+        restart({ restart: [
+            '../static/map/**',
+            '../static/character/**',
+            '../static/animations/**',
+            '../static/textures/**',
+        ] }),
+        shotWriter(),   // dev-only: POST /__shot/[1-5] → static/loading/slide-N.jpg
     ],
 }

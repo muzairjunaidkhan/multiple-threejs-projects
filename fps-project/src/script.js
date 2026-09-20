@@ -405,6 +405,8 @@ function triggerInteract(entry) {
 // the whole mesh a small amount along its local Z as a "drawer pops" cue.
 // ─────────────────────────────────────────
 const CASH_REGISTER_SLIDE = 0.1   // metres — small nudge
+const REGISTER_TAKE_MIN   = 15    // dollars
+const REGISTER_TAKE_MAX   = 60
 
 function interactCashRegister(entry) {
     if (entry._animating) return
@@ -417,6 +419,15 @@ function interactCashRegister(entry) {
     entry._animating  = true
     entry._animAxis   = 'posZ'
     _propAnims.push(entry)
+
+    // Each register pays out once — otherwise you could farm one drawer by
+    // toggling it. Reset by starting a new game (see resetWorldToDefaultSpawn).
+    if (entry.state === 'open' && !entry._looted) {
+        entry._looted = true
+        const take = REGISTER_TAKE_MIN + Math.floor(Math.random() * (REGISTER_TAKE_MAX - REGISTER_TAKE_MIN + 1))
+        addMoney(take)
+        showSubtitle(`Took ${formatMoney(take)} from the register`)
+    }
 }
 
 // ─────────────────────────────────────────
@@ -628,17 +639,29 @@ document.body.appendChild(_boardClose)
 
 let _boardOpen = false, _boardEntryIndex = 0
 
+// The notice reads itself away: long enough to finish the longest message,
+// but you never have to dismiss it. [E] / Esc still close it early.
+const BOARD_AUTO_CLOSE_MS = 9000
+let _boardTimer = null
+
+function closeMessageBoard() {
+    clearTimeout(_boardTimer)
+    _boardTimer = null
+    _boardOverlay.style.display = 'none'
+    _boardClose.style.display   = 'none'
+    _boardOpen = false
+}
+
 function interactMessageBoard(entry) {
-    if (_boardOpen) {
-        _boardOverlay.style.display = 'none'
-        _boardClose.style.display   = 'none'
-        _boardOpen = false
-        return
-    }
+    if (_boardOpen) { closeMessageBoard(); return }
+
     _boardOverlay.textContent   = BOARD_MESSAGES[_boardEntryIndex++ % BOARD_MESSAGES.length]
     _boardOverlay.style.display = 'block'
     _boardClose.style.display   = 'block'
     _boardOpen = true
+
+    clearTimeout(_boardTimer)
+    _boardTimer = setTimeout(closeMessageBoard, BOARD_AUTO_CLOSE_MS)
 }
 
 // ─────────────────────────────────────────
@@ -724,9 +747,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Escape') {
         if (getState() === STATES.PLAYING) {
             if (_boardOpen) {
-                _boardOverlay.style.display = 'none'
-                _boardClose.style.display   = 'none'
-                _boardOpen = false
+                closeMessageBoard()
             } else {
                 setGameState(STATES.PAUSED)
             }
@@ -1773,20 +1794,87 @@ function showSubtitle(text, ms = 3500) {
     _subtitleTimer = setTimeout(() => { _subtitle.style.display = 'none' }, ms)
 }
 
+// ─────────────────────────────────────────
+// MONEY — GTA-style cash readout, top-right
+// ─────────────────────────────────────────
+const MONEY_START    = 0
+const MONEY_FLASH_MS = 1400      // how long the delta lingers after a change
+
+let money = MONEY_START
+
+const moneyEl = document.createElement('div')
+moneyEl.id = 'money'
+moneyEl.innerHTML = '<span id="money-delta"></span><span id="money-value">$0</span>'
+document.body.appendChild(moneyEl)
+const _moneyValue = moneyEl.querySelector('#money-value')
+const _moneyDelta = moneyEl.querySelector('#money-delta')
+let _moneyTimer = null
+
+const formatMoney = (n) => `$${Math.round(n).toLocaleString('en-US')}`
+
+/** Set the balance outright (loading a save, starting a new game) — no flash. */
+function setMoney(n) {
+    money = Math.max(0, Math.round(n) || 0)
+    _moneyValue.textContent = formatMoney(money)
+}
+
+/**
+ * Earn (or, with a negative amount, lose) cash, with the GTA cue: the balance
+ * flashes and a coloured delta floats above it before fading.
+ */
+function addMoney(amount) {
+    if (!amount) return
+    setMoney(money + amount)
+
+    const gain = amount > 0
+    _moneyDelta.textContent = `${gain ? '+' : '-'}${formatMoney(Math.abs(amount))}`
+    moneyEl.classList.remove('money-gain', 'money-loss')
+    void moneyEl.offsetWidth                      // restart the CSS animation
+    moneyEl.classList.add(gain ? 'money-gain' : 'money-loss')
+
+    clearTimeout(_moneyTimer)
+    _moneyTimer = setTimeout(() => {
+        moneyEl.classList.remove('money-gain', 'money-loss')
+    }, MONEY_FLASH_MS)
+}
+
 // World HUD elements that should only show while playing.
 const _hudInstructions = document.getElementById('instructions')
+
+// The controls panel is a reminder, not a permanent fixture — it reads itself
+// away a few seconds into play and stays gone for the rest of the session, so
+// it never covers the world again on every resume.
+const INSTRUCTIONS_HIDE_MS = 12000
+const INSTRUCTIONS_FADE_MS = 700
+let _instrTimer = null, _instrDismissed = false
+
+function armInstructionsAutoHide() {
+    if (_instrDismissed || !_hudInstructions || _instrTimer) return
+    _instrTimer = setTimeout(() => {
+        _hudInstructions.classList.add('hud-fade-out')
+        setTimeout(() => {
+            _instrDismissed = true
+            _hudInstructions.style.display = 'none'
+        }, INSTRUCTIONS_FADE_MS)
+    }, INSTRUCTIONS_HIDE_MS)
+}
+
 function setWorldHudVisible(v) {
-    if (_hudInstructions) _hudInstructions.style.display = v ? '' : 'none'
+    if (_hudInstructions) {
+        _hudInstructions.style.display = (v && !_instrDismissed) ? '' : 'none'
+        if (v) armInstructionsAutoHide()
+    }
     perfPanel.style.display = v ? '' : 'none'
+    // Explicit 'block', not '': #money defaults to display:none in CSS so it
+    // cannot flash before bootShell runs, and '' would fall back to that.
+    moneyEl.style.display   = v ? 'block' : 'none'
     const showMap = v && minimapVisible
     minimapContainer.style.display = showMap ? '' : 'none'
     compassLabel.style.display     = showMap ? '' : 'none'
     if (!v) {
         crosshair.style.display       = 'none'
         _interactPrompt.style.display = 'none'
-        _boardOverlay.style.display   = 'none'
-        _boardClose.style.display     = 'none'
-        _boardOpen = false
+        closeMessageBoard()
     }
 }
 
@@ -1837,6 +1925,8 @@ function resetWorldToDefaultSpawn() {
     _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
     camYaw = targetYaw = 0
     camPitch = targetPitch = 0.4
+    setMoney(MONEY_START)
+    for (const entry of interactables) entry._looted = false   // registers pay out again
 }
 
 // ── Save bridge (script.js owns the physics body) ──────────
@@ -1846,6 +1936,7 @@ function captureSaveFromWorld() {
         position:    { x: p.x, y: p.y, z: p.z },
         camYaw:      targetYaw,
         camPitch:    targetPitch,
+        money,
         ...missions.serializeProgress(),
         missionName: missions.getActiveMission()?.name ?? 'Free Roam',
         location:    'Dead Mesa',
@@ -1857,6 +1948,7 @@ function applySaveToWorld(d) {
     characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
     targetYaw   = camYaw   = d.camYaw   ?? 0
     targetPitch = camPitch = d.camPitch ?? 0.4
+    setMoney(d.money ?? MONEY_START)        // older saves predate money
     const p = characterBody.translation()
     _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true   // reseed interp
     missions.restoreProgress(d)
@@ -1921,7 +2013,9 @@ onStateChange((next) => {
 // the 39MB world is loaded lazily on New Game / Continue.
 // ─────────────────────────────────────────
 function bootShell() {
-    if (loadingScreen) loadingScreen.classList.add('hidden')   // reused later for world load
+    // index.html already ships it hidden (so the menu art is the first paint);
+    // this is a defensive no-op in case a reload left it showing.
+    if (loadingScreen) loadingScreen.classList.add('hidden')
     gui.hide()                                                 // Settings panel hidden behind the menu
     setWorldHudVisible(false)
 

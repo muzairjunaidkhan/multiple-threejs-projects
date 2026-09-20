@@ -72,6 +72,16 @@ body {
     min-width: 210px;
 }
 
+/* The panel auto-dismisses a few seconds into play (script.js
+   armInstructionsAutoHide) — this is the fade it leaves on. */
+#instructions {
+    transition: opacity 0.7s ease, transform 0.7s ease;
+}
+#instructions.hud-fade-out {
+    opacity: 0;
+    transform: translateX(-12px);
+}
+
 #instructions h3 {
     color: #7dd3fc;
     font-size: 11px;
@@ -358,26 +368,29 @@ kbd {
     pointer-events: none;
 }
 
-/* Western background — pure CSS, no image asset */
-.menu-bg {
-    position: absolute;
+/* ── Shell backdrop ────────────────────────────────────────────
+   ONE persistent layer behind every main-menu-context screen — main menu,
+   Load, Save, Credits, Settings — so navigating into a sub-screen no longer
+   drops the background. Declared in index.html (so it is the first paint) and
+   hidden by menu.js whenever the state leaves MAINMENU, which is what keeps
+   the live world visible behind the PAUSE menu.
+   The vignette is layered OVER the photo so the centred title and the button
+   column stay readable whatever the shot contains. */
+#shell-bg {
+    position: fixed;
     inset: 0;
-    background: radial-gradient(120% 85% at 50% 18%,
-        #e8d5a3 0%, #c9a96e 26%, #8a6531 52%, #3a2814 78%, #0a0a0f 100%);
+    z-index: 700;              /* above the canvas, below #menu-root (800) */
+    background-color: #0a0a0f;
+    background-image:
+        radial-gradient(120% 90% at 50% 42%,
+            rgba(10, 8, 4, 0.34) 0%, rgba(10, 8, 4, 0.46) 40%,
+            rgba(10, 8, 4, 0.72) 75%, rgba(6, 5, 3, 0.94) 100%),
+        url('/loading/menu.jpg');
+    background-size: cover, cover;
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
 }
-.menu-bg::after {
-    /* town / mesa silhouette across the bottom */
-    content: '';
-    position: absolute;
-    left: 0; right: 0; bottom: 0; height: 36%;
-    background: #120d07;
-    opacity: 0.95;
-    clip-path: polygon(0% 100%, 0% 58%, 8% 58%, 10% 42%, 14% 42%, 16% 60%,
-        26% 60%, 28% 32%, 34% 32%, 36% 60%, 50% 60%, 52% 24%, 60% 24%,
-        62% 58%, 74% 58%, 76% 44%, 82% 44%, 84% 60%, 92% 60%, 94% 50%,
-        100% 50%, 100% 100%);
-}
-.menu-grain {
+.shell-grain {
     position: absolute;
     inset: 0;
     opacity: 0.06;
@@ -500,7 +513,33 @@ kbd {
 
 /* Credits */
 .credits-body { color: #c9a96e; text-align: center; line-height: 1.9; font-size: 15px; }
-.credits-dim  { color: #7a6a4a; font-size: 12px; }
+.credits-dim  { color: #7a6a4a; font-size: 12px; margin-top: 16px; }
+
+/* Third-party attribution (CC-BY etc.) — quieter and narrower than the body,
+   so a long licence sentence doesn't stretch the panel across the screen. */
+.credits-attrib {
+    max-width: 440px;
+    margin-top: 10px;
+    color: #9a8a6a;
+    text-align: center;
+    font-size: 11.5px;
+    line-height: 1.7;
+}
+.credits-head {
+    display: block;
+    margin-bottom: 2px;
+    color: #8b6914;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+.credits-attrib a {
+    color: #c9a96e;
+    pointer-events: auto;      /* the panel opts in; links must too */
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.credits-attrib a:hover { color: #fff7e0; }
 
 /* Settings — reuses lil-gui (top-right); just a back bar at top-left */
 .menu-settings { align-items: flex-start; justify-content: flex-start; }
@@ -533,12 +572,21 @@ kbd {
     overflow: hidden;
     background: #000;
 }
+/* The "sepia map still" the cards sit on. The old radial gradient is kept as a
+   vignette layered over the photo, so the centred cards stay legible. */
 .cs-sepia {
     position: absolute;
     inset: 0;
     opacity: 0;
     filter: sepia(0.5);
-    background: radial-gradient(100% 80% at 50% 40%, #6e5630 0%, #3a2c18 50%, #120c06 100%);
+    background-color: #120c06;
+    background-image:
+        radial-gradient(100% 80% at 50% 40%,
+            rgba(58, 44, 24, 0.42) 0%, rgba(44, 33, 18, 0.66) 50%, rgba(12, 8, 4, 0.94) 100%),
+        url('/loading/cutscene.jpg');
+    background-size: cover, cover;
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
 }
 .cs-cards { position: absolute; inset: 0; z-index: 2; }
 .cs-card {
@@ -650,6 +698,59 @@ kbd {
 }
 
 /* Perf panel — FPS / tris / draws, bottom-right */
+/* ═══════════════════════════════════════════
+   MONEY — GTA-style cash readout, top-right.
+   Built in script.js; a change adds .money-gain / .money-loss for ~1.4s,
+   which flashes the balance and floats the delta above it.
+═══════════════════════════════════════════ */
+#money {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 300;
+    display: none;                 /* setWorldHudVisible reveals it */
+    text-align: right;
+    pointer-events: none;
+    font-family: 'Courier New', monospace;
+    user-select: none;
+}
+
+#money-value {
+    display: block;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #6fcf5f;                                  /* cash green */
+    text-shadow: 0 2px 4px rgba(0,0,0,0.9), 0 0 14px rgba(0,0,0,0.6);
+    transition: color 0.18s ease;
+}
+
+#money-delta {
+    display: block;
+    height: 16px;
+    margin-bottom: -2px;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.9);
+}
+
+/* Gain: balance punches to white, delta floats up in green. */
+.money-gain #money-value { color: #fff; }
+.money-gain #money-delta { color: #8bf07a; animation: money-float 1.4s ease-out forwards; }
+
+/* Loss: same move, red. */
+.money-loss #money-value { color: #ff8a70; }
+.money-loss #money-delta { color: #ff8a70; animation: money-float 1.4s ease-out forwards; }
+
+@keyframes money-float {
+    0%   { opacity: 0; transform: translateY(6px); }
+    15%  { opacity: 1; transform: translateY(0); }
+    70%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-8px); }
+}
+
 #perf-panel {
     position: fixed;
     bottom: 8px;
@@ -670,19 +771,19 @@ kbd {
 #minimap {
     position: fixed;
     bottom: 16px;
-    left: 16px;
+    left: 20px;
     width: 200px;
     height: 200px;
     z-index: 150;
     pointer-events: none;
-    background: radial-gradient(circle 100px at 50% 50%, transparent 0 98px, #0a0a0f 99px);
+    /* background: radial-gradient(circle 100px at 50% 50%, transparent 0 98px, #0a0a0f 99px); */
 }
 
 .minimap-ring {
     position: absolute;
     inset: 0;
     border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    /* border: 2px solid rgba(255, 255, 255, 0.3); */
     pointer-events: none;
 }
 

@@ -19,6 +19,7 @@ import * as save from './saveSystem.js'
 
 let _hooks    = {}
 let _root     = null            // #menu-root container
+let _bg       = null            // #shell-bg backdrop (declared in index.html)
 let _screens  = {}              // name → element
 let _active   = null            // active screen name or null
 let _return   = 'main'          // where load/save/settings return to
@@ -55,8 +56,10 @@ export function initMenu(hooks) {
     _root.id = 'menu-root'
     document.body.appendChild(_root)
 
-    _screens.main     = buildListScreen('main', 'DEAD MESA', MAIN_ITEMS, true)
-    _screens.pause    = buildListScreen('pause', 'PAUSED', PAUSE_ITEMS, false)
+    _bg = document.getElementById('shell-bg')
+
+    _screens.main     = buildListScreen('main', 'DEAD MESA', MAIN_ITEMS)
+    _screens.pause    = buildListScreen('pause', 'PAUSED', PAUSE_ITEMS)
     _screens.load     = buildSlotScreen('load')
     _screens.save     = buildSlotScreen('save')
     _screens.credits  = buildCredits()
@@ -70,6 +73,13 @@ export function initMenu(hooks) {
     window.addEventListener('keydown', onKeyDown)
 
     onStateChange((next) => {
+        // The backdrop belongs to the main-menu context only. Load/Save/Credits/
+        // Settings navigate internally without touching gameState, so when they
+        // are opened from the main menu the state is still MAINMENU and they
+        // keep it; opened from the pause menu it is PAUSED, so the live world
+        // stays visible behind them.
+        _bg?.classList.toggle('hidden', next !== STATES.MAINMENU)
+
         if (next === STATES.MAINMENU)    showScreen('main')
         else if (next === STATES.PAUSED) showScreen('pause')
         else                             hideAll()
@@ -81,11 +91,12 @@ export function showPauseMenu() { showScreen('pause') }
 export function hideAllMenus()  { hideAll() }
 
 // ── Screen builders ────────────────────────────────────────
-function buildListScreen(kind, title, items, withBg) {
+// The background is NOT built here — #shell-bg in index.html covers every
+// main-menu screen at once (see initMenu), so sub-screens keep it too.
+function buildListScreen(kind, title, items) {
     const el = document.createElement('div')
     el.className = `menu-screen menu-list ${kind === 'main' ? 'menu-main' : 'menu-pause'}`
     el.innerHTML = `
-        ${withBg ? '<div class="menu-bg"></div><div class="menu-grain"></div>' : ''}
         <div class="menu-panel">
             <h1 class="menu-title">${title}</h1>
             <div class="menu-rule"></div>
@@ -116,6 +127,9 @@ function buildSlotScreen(mode) {
             <div class="slot-status"></div>
             <button class="menu-btn slot-back" data-action="back">BACK</button>
         </div>`
+    // Slot screens aren't list screens, so buildListScreen's per-button wiring
+    // never ran for this one — bind it here, the same way the settings bar does.
+    el.querySelector('.slot-back').addEventListener('click', () => activate('back'))
     return el
 }
 
@@ -129,9 +143,32 @@ function buildCredits() {
             <p class="credits-body">
                 DEAD MESA<br><br>
                 A Three.js · Rapier project<br>
-                by M Uzair Junaid<br><br>
-                <span class="credits-dim">Press any key to return</span>
+                by M Uzair Junaid
             </p>
+
+            <div class="menu-rule"></div>
+
+            <!-- Required attribution for the town model — the exact credit text
+                 from static/map/license.txt, which CC-BY-4.0 obliges us to
+                 reproduce wherever the work is shared. -->
+            <p class="credits-attrib">
+                <span class="credits-head">World Model</span>
+                This work is based on
+                <a href="https://sketchfab.com/3d-models/chicken-gun-western-reupload-0af4297ae86d49588cd51d63c626baf7"
+                   target="_blank" rel="noopener noreferrer">"chicken gun western reupload"</a>
+                by
+                <a href="https://sketchfab.com/amogusstrikesback2"
+                   target="_blank" rel="noopener noreferrer">amogusstrikesback2</a>,
+                licensed under
+                <a href="http://creativecommons.org/licenses/by/4.0/"
+                   target="_blank" rel="noopener noreferrer">CC-BY-4.0</a>.
+            </p>
+            <p class="credits-attrib">
+                <span class="credits-head">Character &amp; Animations</span>
+                Y Bot and motion clips from Adobe Mixamo.
+            </p>
+
+            <p class="credits-dim">Press any key to return</p>
         </div>`
     return el
 }

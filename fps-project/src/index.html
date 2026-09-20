@@ -39,9 +39,20 @@
     <canvas id="canvas"></canvas>
 
     <!-- ═══════════════════════════════════════════
-         Loading screen shown while assets load
+         Shell backdrop — sits behind every main-menu screen.
+         Declared here rather than built in menu.js so the menu art is the
+         FIRST PAINT: the browser fetches it while parsing, instead of showing
+         black (or a fake loading screen) for the 1-3s the JS bundle takes to
+         boot. menu.js hides it as soon as we leave MAINMENU.
     ═══════════════════════════════════════════ -->
-    <div id="loading-screen">
+    <div id="shell-bg"><div class="shell-grain"></div></div>
+
+    <!-- ═══════════════════════════════════════════
+         Loading screen shown while assets load.
+         Starts hidden: it is for the lazy 42MB world load triggered by
+         New Game / Continue, NOT for page boot. startWorld() reveals it.
+    ═══════════════════════════════════════════ -->
+    <div id="loading-screen" class="hidden">
         <!-- GTA-style art slideshow. Each slide cross-fades over the others.
              Drop replacement art in static/loading/ as slide-1.jpg … slide-5.jpg
              (served at /loading/…). Until then each slide shows its tint colour. -->
