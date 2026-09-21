@@ -19,6 +19,7 @@ import * as saveSystem from './game/saveSystem.js'
 import * as missions from './game/missions.js'
 import { initMenu, showMainMenu, showPauseMenu, hideAllMenus } from './game/menu.js'
 import { initCutscene, playIntro } from './game/cutscene.js'
+import * as audio from './game/audio.js'
 
 // ─────────────────────────────────────────
 // TUNING CONSTANTS
@@ -301,7 +302,10 @@ const INTERACTABLE_ENABLED = {
     suitcase_lid:  true,
     cash_register: true,
     ladder:        false,   // stub handler — off by default
-    piano:         false,   // stub handler — off by default
+    // Read ONCE at load time by loadCity's traverse, so the runtime GUI toggle
+    // cannot bring the piano back — a disabled mesh has already been swallowed
+    // by the merge/instance batch. Costs +1 draw call per piano.
+    piano:         true,    // synthesised saloon phrases — see audio.playPianoAt
 }
 
 const INTERACTABLE_ITEM_OVERRIDES = {
@@ -391,7 +395,7 @@ function triggerInteract(entry) {
         case 'messageboard':  interactMessageBoard(entry);      break
         case 'cash_register': interactCashRegister(entry);      break
         case 'ladder': console.log('[interact] ladder — Phase 5'); break
-        case 'piano':  console.log('[interact] piano  — Phase 7'); break
+        case 'piano':         interactPiano(entry);              break
         default: console.log(`[interact] unhandled type: ${entry.type}`); break
     }
     // Let missions observe this interaction (additive; dormant when disabled).
@@ -403,6 +407,26 @@ function triggerInteract(entry) {
 //
 // The prop is a single mesh (no separate drawer geometry), so we just nudge
 // the whole mesh a small amount along its local Z as a "drawer pops" cue.
+// ─────────────────────────────────────────
+// ─────────────────────────────────────────
+// PIANO
+//
+// Not a toggle — each press performs a short synthesised saloon phrase
+// (audio.js renders them once through an OfflineAudioContext). The cooldown
+// sits just under the phrase length so mashing E can't stack performances.
+// ─────────────────────────────────────────
+const PIANO_COOLDOWN = 2.4   // seconds
+
+function interactPiano(entry) {
+    const now = performance.now() / 1000
+    if (entry._pianoUntil && now < entry._pianoUntil) return
+    entry._pianoUntil = now + PIANO_COOLDOWN
+    audio.playPianoAt(entry.object)
+    showSubtitle('You bang out a few bars')
+}
+
+// ─────────────────────────────────────────
+// CASH REGISTER (continued)
 // ─────────────────────────────────────────
 const CASH_REGISTER_SLIDE = 0.1   // metres — small nudge
 const REGISTER_TAKE_MIN   = 15    // dollars
@@ -416,6 +440,10 @@ function interactCashRegister(entry) {
     entry._drawerMesh = mesh
     entry._targetZ    = entry.state === 'closed' ? entry.openZ : entry.closedZ
     entry.state       = entry.state === 'closed' ? 'open' : 'closed'
+    // Drawer slide — fires on every toggle. The coin chime below is separate
+    // and only owed once, so the two are deliberately not the same cue.
+    audio.playAt(mesh, entry.state === 'open' ? 'latch_heavy' : 'latch_click',
+                 { volume: entry.state === 'open' ? 0.8 : 0.7, rate: entry.state === 'open' ? 1.15 : 1 })
     entry._animating  = true
     entry._animAxis   = 'posZ'
     _propAnims.push(entry)
@@ -514,6 +542,14 @@ function doorDirection(name) {
 // ─────────────────────────────────────────
 const _doorAnims = []
 
+// All three door types share interactDoor, so map the audio by type rather
+// than branching three ways. Bat-wings get cloth, the vault gets heavy metal.
+const DOOR_SFX = {
+    door:          { open: 'door_open',   close: 'door_close', creak: true,  volume: 0.85 },
+    door_vault:    { open: 'latch_heavy', close: 'door_heavy', creak: false, volume: 1.0, closeRate: 0.9 },
+    door_swinging: { open: 'swing',       close: 'swing',      creak: false, volume: 0.6 },
+}
+
 function interactDoor(entry, swingAngle = DOOR_SWING_ANGLE) {
     if (entry._animating) return
 
@@ -531,6 +567,16 @@ function interactDoor(entry, swingAngle = DOOR_SWING_ANGLE) {
     } else {
         entry._targetRotY = entry.closedRotY
         entry.state       = 'closed'
+    }
+
+    // Sound fires HERE, not in triggerInteract — the early return above means a
+    // door mid-swing rejects the press, and a central hook would play anyway.
+    const sfx = DOOR_SFX[entry.type] ?? DOOR_SFX.door
+    if (entry.state === 'open') {
+        if (sfx.creak) audio.playAt(pivot, 'creak', { volume: 0.55, rateJitter: 0.06 })
+        audio.playAt(pivot, sfx.open, { volume: sfx.volume, rateJitter: 0.05 })
+    } else {
+        audio.playAt(pivot, sfx.close, { volume: sfx.volume, rate: sfx.closeRate ?? 1, rateJitter: 0.05 })
     }
 
     entry._animating = true
@@ -562,6 +608,11 @@ function updateDoorAnims(dt) {
             pivot.rotation.y = entry._targetRotY
             updateDoorCollider(entry)
             entry._animating = false
+            // Latch click once the swing actually settles shut (not bat-wings,
+            // which have no latch — they just keep swinging).
+            if (entry.state === 'closed' && entry.type !== 'door_swinging') {
+                audio.playAt(pivot, 'latch_click', { volume: 0.5, rateJitter: 0.05 })
+            }
             _doorAnims.splice(i, 1)
         }
     }
@@ -584,6 +635,7 @@ function interactSuitcaseLid(entry) {
     if (entry.openRotX   === undefined) entry.openRotX   = entry.closedRotX - (2 * Math.PI / 3)
     entry._targetRotX = entry.state === 'closed' ? entry.openRotX : entry.closedRotX
     entry.state       = entry.state === 'closed' ? 'open' : 'closed'
+    audio.playAt(lid, entry.state === 'open' ? 'case_open' : 'case_close', { volume: 0.8, rateJitter: 0.05 })
     entry._animating  = true
     entry._animAxis   = 'rotX'
     _propAnims.push(entry)
@@ -645,6 +697,9 @@ const BOARD_AUTO_CLOSE_MS = 9000
 let _boardTimer = null
 
 function closeMessageBoard() {
+    // 2D: this is also the auto-close / Escape / HUD-hide path, which has no
+    // entry to take a world position from.
+    if (_boardOpen) audio.play2D('board_close', { volume: 0.6 })
     clearTimeout(_boardTimer)
     _boardTimer = null
     _boardOverlay.style.display = 'none'
@@ -659,6 +714,7 @@ function interactMessageBoard(entry) {
     _boardOverlay.style.display = 'block'
     _boardClose.style.display   = 'block'
     _boardOpen = true
+    audio.playAt(entry.object, 'board_open', { volume: 0.7, rateJitter: 0.05 })
 
     clearTimeout(_boardTimer)
     _boardTimer = setTimeout(closeMessageBoard, BOARD_AUTO_CLOSE_MS)
@@ -826,6 +882,13 @@ sceneFolder.add(HUD, 'minimap').name('Minimap').onChange(v => {
     minimapContainer.style.display = show ? '' : 'none'
     compassLabel.style.display     = show ? '' : 'none'
 })
+
+// Audio. `audio.settings` is a module-scope object in audio.js seeded from
+// localStorage at import time — this folder is built before bootShell() runs
+// initAudio(), so it cannot bind to anything the AudioContext produces.
+const auf = gui.addFolder('Audio')
+auf.add(audio.settings, 'master', 0, 1, 0.01).name('Master Volume').onChange(() => audio.applySettings())
+auf.add(audio.settings, 'mute').name('Mute').onChange(() => audio.applySettings())
 
 // Runtime interaction toggles (behaviour only — these never change what is
 // rendered, so tris/draws/geom stay the same). To actually drop draw calls,
@@ -1033,6 +1096,8 @@ const _yawQuat     = new THREE.Quaternion()
 const _axisY       = new THREE.Vector3(0, 1, 0)
 
 let grounded     = false
+let wasGrounded  = false   // landing edge — rising !wasGrounded && grounded
+let landMuteTimer = 0      // suppresses the ~90-unit autoSpawn drop (see resetWorldToDefaultSpawn)
 let coyoteTimer  = 0
 let hasMoveInput = false
 
@@ -1073,6 +1138,9 @@ function updateMovement(dt) {
     if (jumpBufferTimer > 0 && coyoteTimer > 0) {
         const v = characterBody.linvel()
         characterBody.setLinvel({ x: v.x, y: JUMP_SPEED, z: v.z }, true)
+        // Here, not the Space keydown: that only arms the buffer and fires even
+        // when the jump is refused (no coyote time left).
+        audio.play2D('swing', { volume: 0.4, rateJitter: 0.06 })
         jumpBufferTimer = 0
         coyoteTimer     = 0
     }
@@ -1118,6 +1186,58 @@ function pickLocomotion() {
     if (smoothedSpeed > SPEED.runEnter)  return 'Run'
     if (smoothedSpeed > SPEED.walkEnter) return 'Walk'
     return 'Idle'
+}
+
+// ─────────────────────────────────────────
+// FOOTSTEPS / LANDING
+//
+// Distance accumulator, not a timer: frame-rate independent by construction,
+// and the constants read as physical stride lengths (a person is 0.96 units
+// tall here). Gated on the animation state — pickLocomotion() already carries
+// tuned hysteresis and structurally excludes Jump, Idle and the emotes.
+// ─────────────────────────────────────────
+const STRIDE_WALK   = 1.10   // units between footfalls at WALK_SPEED → ~0.50s
+const STRIDE_RUN    = 1.45   // units between footfalls at RUN_SPEED  → ~0.32s
+const STRIDE_PRIME  = 0.35   // pre-charge so the first step isn't a full stride late
+const STEP_VOL_WALK = 0.45
+const STEP_VOL_RUN  = 0.80
+
+const LAND_MIN_IMPACT  = 3.0   // below this it's a kerb, not a fall
+const LAND_FULL_IMPACT = 8.0
+
+let _stepAccum = STRIDE_PRIME
+
+function updateFootsteps(dt) {
+    // `grounded &&` is NOT redundant: setState('Jump') only fires once
+    // airborneTimer > COYOTE_TIME, so currentState can read 'Walk' for up to
+    // 0.1s in mid-air after stepping off a kerb.
+    const moving = grounded && (currentState === 'Walk' || currentState === 'Run')
+    if (!moving) { _stepAccum = STRIDE_PRIME; return }
+
+    // Never read keys.walk here — it lies during the deceleration ramp after
+    // Shift is released. smoothedSpeed is the observed result.
+    const t      = THREE.MathUtils.clamp((smoothedSpeed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED), 0, 1)
+    const stride = THREE.MathUtils.lerp(STRIDE_WALK, STRIDE_RUN, t)
+
+    _stepAccum += smoothedSpeed * dt
+    if (_stepAccum < stride) return
+    _stepAccum -= stride         // subtract, don't zero — keeps cadence phase stable
+
+    audio.play2D('footstep', {
+        volume: THREE.MathUtils.lerp(STEP_VOL_WALK, STEP_VOL_RUN, t),
+        rateJitter: 0.08,
+    })
+}
+
+function onLanded(impact) {
+    if (landMuteTimer > 0) return             // autoSpawn drops the player ~90 units
+    if (airborneTimer <= COYOTE_TIME) return  // trimesh micro-bounce, not a real fall
+    if (impact < LAND_MIN_IMPACT) return      // stepped off a lip
+
+    const t = THREE.MathUtils.clamp(
+        (impact - LAND_MIN_IMPACT) / (LAND_FULL_IMPACT - LAND_MIN_IMPACT), 0, 1)
+    audio.play2D(t > 0.5 ? 'land_hard' : 'footstep',
+                 { volume: THREE.MathUtils.lerp(0.35, 0.9, t), rateJitter: 0.05 })
 }
 
 function updateAnimation(dt) {
@@ -1621,8 +1741,12 @@ function stepPhysics(dt) {
     let steps = 0
     while (physicsAccumulator >= FIXED_TIME_STEP && steps < MAX_SUBSTEPS) {
         updateMovement(FIXED_TIME_STEP)
+        const vyBefore = characterBody.linvel().y   // post-step it is resolved to ~0
         world.step()
         grounded = checkGround()
+        if (grounded && !wasGrounded) onLanded(-vyBefore)
+        wasGrounded   = grounded
+        landMuteTimer = Math.max(0, landMuteTimer - FIXED_TIME_STEP)
         jumpBufferTimer = Math.max(0, jumpBufferTimer - FIXED_TIME_STEP)
         const p = characterBody.translation()
         _prevPos.copy(_currPos)
@@ -1754,6 +1878,7 @@ function tick() {
         syncCamera(_smoothPos)
 
         updateAnimation(delta)
+        updateFootsteps(delta)
         updateInteraction(delta)
         updateDoorAnims(delta)   // syncs each door's collider while it animates
         updatePropAnims(delta)
@@ -1827,6 +1952,9 @@ function addMoney(amount) {
     setMoney(money + amount)
 
     const gain = amount > 0
+    // 2D — money is a HUD event; the register that produced it already played
+    // its own positional drawer sound. setMoney() stays silent by construction.
+    audio.play2D(gain ? 'money_gain' : 'money_loss', { volume: 0.8 })
     _moneyDelta.textContent = `${gain ? '+' : '-'}${formatMoney(Math.abs(amount))}`
     moneyEl.classList.remove('money-gain', 'money-loss')
     void moneyEl.offsetWidth                      // restart the CSS animation
@@ -1927,6 +2055,10 @@ function resetWorldToDefaultSpawn() {
     camPitch = targetPitch = 0.4
     setMoney(MONEY_START)
     for (const entry of interactables) entry._looted = false   // registers pay out again
+    // autoSpawn drops the player from box.min.y + 90 — without this every New
+    // Game would open with a full-volume landing thud at ~65 u/s impact.
+    landMuteTimer = 3.0
+    wasGrounded   = true
 }
 
 // ── Save bridge (script.js owns the physics body) ──────────
@@ -1951,6 +2083,8 @@ function applySaveToWorld(d) {
     setMoney(d.money ?? MONEY_START)        // older saves predate money
     const p = characterBody.translation()
     _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true   // reseed interp
+    landMuteTimer = 3.0            // a load teleport is not a fall
+    wasGrounded   = true
     missions.restoreProgress(d)
 }
 
@@ -1990,6 +2124,8 @@ const worldApi = {
     teleport(x, y, z) {
         characterBody.setTranslation({ x, y, z }, true)
         characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        landMuteTimer = 3.0        // arriving somewhere is not landing there
+        wasGrounded   = true
         const p = characterBody.translation()
         _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); hasPrevState = true
     },
@@ -2002,6 +2138,7 @@ onStateChange((next) => {
     const playing = next === STATES.PLAYING
     setWorldHudVisible(playing)
     if (!playing) {
+        audio.stopWorld()   // a door creak shouldn't keep ringing over the pause menu
         keys.forward = keys.backward = keys.left = keys.right = keys.walk = false
         if (characterBody) characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
         if (isLocked) document.exitPointerLock()
@@ -2019,6 +2156,7 @@ function bootShell() {
     gui.hide()                                                 // Settings panel hidden behind the menu
     setWorldHudVisible(false)
 
+    audio.initAudio(camera, scene)   // listener rides the camera; voices live in the scene
     missions.initMissions(worldApi)
     initCutscene()
     initMenu(hooks)
