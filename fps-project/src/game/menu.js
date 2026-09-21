@@ -16,6 +16,7 @@
 
 import { STATES, getState, onStateChange } from './gameState.js'
 import * as save from './saveSystem.js'
+import * as audio from './audio.js'
 
 let _hooks    = {}
 let _root     = null            // #menu-root container
@@ -72,7 +73,10 @@ export function initMenu(hooks) {
 
     window.addEventListener('keydown', onKeyDown)
 
-    onStateChange((next) => {
+    onStateChange((next, prev) => {
+        if (next === STATES.PAUSED)      audio.playUI('ui_pause', { volume: 0.6 })
+        else if (prev === STATES.PAUSED) audio.playUI('ui_back',  { volume: 0.5 })
+
         // The backdrop belongs to the main-menu context only. Load/Save/Credits/
         // Settings navigate internally without touching gameState, so when they
         // are opened from the main menu the state is still MAINMENU and they
@@ -109,7 +113,12 @@ function buildListScreen(kind, title, items) {
         b.dataset.action = it.action
         b.dataset.index  = i
         b.textContent = it.label
-        b.addEventListener('mouseenter', () => { _selIndex = i; refreshSelection() })
+        // The guard stops a re-tick when the keyboard already selected this row
+        // and the mouse merely happens to be resting on it.
+        b.addEventListener('mouseenter', () => {
+            if (_selIndex !== i) { _selIndex = i; audio.playUI('ui_move', { volume: 0.5 }) }
+            refreshSelection()
+        })
         b.addEventListener('click', () => { _selIndex = i; activate(it.action) })
         nav.appendChild(b)
     })
@@ -167,6 +176,19 @@ function buildCredits() {
                 <span class="credits-head">Character &amp; Animations</span>
                 Y Bot and motion clips from Adobe Mixamo.
             </p>
+            <p class="credits-attrib">
+                <span class="credits-head">Sound Effects</span>
+                <a href="https://kenney.nl/assets/rpg-audio"
+                   target="_blank" rel="noopener noreferrer">RPG Audio</a>
+                and
+                <a href="https://kenney.nl/assets/ui-audio"
+                   target="_blank" rel="noopener noreferrer">UI Audio</a>
+                by <a href="https://kenney.nl" target="_blank" rel="noopener noreferrer">Kenney</a>,
+                released under
+                <a href="https://creativecommons.org/publicdomain/zero/1.0/"
+                   target="_blank" rel="noopener noreferrer">CC0</a>.
+                Piano synthesised in-engine.
+            </p>
 
             <p class="credits-dim">Press any key to return</p>
         </div>`
@@ -216,6 +238,7 @@ function renderSlots(mode) {
             del.title = 'Delete save'
             del.addEventListener('click', (e) => {
                 e.stopPropagation()
+                audio.playUI('ui_back', { volume: 0.6 })
                 save.deleteSlot(s.slot)
                 renderSlots(mode)
             })
@@ -227,6 +250,8 @@ function renderSlots(mode) {
 
 function onSlotActivate(mode, s) {
     const status = _screens[mode].querySelector('.slot-status')
+    // Slot cards bypass activate(), so they hook their own feedback.
+    audio.playUI(s.empty && mode === 'load' ? 'ui_back' : 'ui_select', { volume: 0.6 })
     if (mode === 'save') {
         const ok = _hooks.saveToSlot?.(s.slot)
         status.textContent = ok === false ? 'Save failed — storage unavailable.' : `Saved to slot ${s.slot}.`
@@ -273,6 +298,9 @@ function refreshSelection() {
 
 // ── Actions ────────────────────────────────────────────────
 function activate(action) {
+    // One hook covers four call sites: button clicks, Enter/Space, the slot
+    // screen's BACK and the settings BACK.
+    audio.playUI(action === 'back' ? 'ui_back' : 'ui_select', { volume: 0.6 })
     switch (action) {
         case 'continue': if (save.anySave()) _hooks.continueGame?.(); break
         case 'newgame':  _hooks.startNewGame?.(); break
@@ -314,10 +342,12 @@ function onKeyDown(e) {
     }
 
     switch (e.key) {
+        // Hooked here rather than in refreshSelection(), which also runs on
+        // every screen open and every mouse hover.
         case 'ArrowUp': case 'w': case 'W':
-            _selIndex--; refreshSelection(); e.preventDefault(); break
+            _selIndex--; refreshSelection(); audio.playUI('ui_move', { volume: 0.5 }); e.preventDefault(); break
         case 'ArrowDown': case 's': case 'S':
-            _selIndex++; refreshSelection(); e.preventDefault(); break
+            _selIndex++; refreshSelection(); audio.playUI('ui_move', { volume: 0.5 }); e.preventDefault(); break
         case 'Enter': case ' ': {
             const btns = navButtons()
             if (btns[_selIndex]) activate(btns[_selIndex].dataset.action)
