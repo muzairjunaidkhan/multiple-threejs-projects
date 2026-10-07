@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NPC asset prep — dev only</title>
+    <!-- Dev-only, like capture.html and char-prep.html: served by Vite in dev, never a build
+         entry, so it does not ship in dist/. Its gun tools baked static/weapons/ from the
+         Quaternius gun pack. (Its NPC builder made the previous Quaternius townsfolk, which
+         the game no longer uses; char-prep.html makes today's cast.) -->
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { background: #14161c; color: #ccc; font: 12px 'Courier New', monospace; overflow: hidden; }
+        #stage { position: relative; width: 1000px; height: 1000px; }
+        #canvas, #overlay { position: absolute; left: 0; top: 0; width: 1000px; height: 1000px; }
+        #overlay { pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="stage">
+        <canvas id="canvas" width="1000" height="1000"></canvas>
+        <canvas id="overlay" width="1000" height="1000"></canvas>
+    </div>
+    <script type="module" src="./npc-prep.js"></script>
+</body>
+</html>

@@ -172,22 +172,70 @@ function buildCredits() {
                 <a href="http://creativecommons.org/licenses/by/4.0/"
                    target="_blank" rel="noopener noreferrer">CC-BY-4.0</a>.
             </p>
+            <!-- Required attributions (CC-BY-4.0) for the people and the horse. -->
             <p class="credits-attrib">
-                <span class="credits-head">Character &amp; Animations</span>
-                Y Bot and motion clips from Adobe Mixamo.
+                <span class="credits-head">Characters</span>
+                The player is based on
+                <a href="https://sketchfab.com/3d-models/ga-free-451-rugged-cowboy-high-poly-7a8b66096bdd454ebc5aa99e6ff388ce"
+                   target="_blank" rel="noopener noreferrer">"GA Free_451_Rugged Cowboy - High Poly"</a>
+                by <a href="https://sketchfab.com/galaxyabundant" target="_blank" rel="noopener noreferrer">Galaxy Abundant</a>,
+                and townsfolk on
+                <a href="https://sketchfab.com/3d-models/cowboy-western-01-9df692aa75c24fbe9ec695f5626a1cb7"
+                   target="_blank" rel="noopener noreferrer">"Cowboy - western 01"</a>
+                by <a href="https://sketchfab.com/v.a.c.u.u.m." target="_blank" rel="noopener noreferrer">ALTEREGO (v.a.c.u.u.m.)</a>,
+                both licensed under
+                <a href="http://creativecommons.org/licenses/by/4.0/"
+                   target="_blank" rel="noopener noreferrer">CC-BY-4.0</a>.
+                Bandits are based on
+                <a href="https://sketchfab.com/3d-models/cowboy-character-model-86be1d4e5a4640788c4cd9b16256b159"
+                   target="_blank" rel="noopener noreferrer">"Cowboy Character Model"</a>
+                by <a href="https://sketchfab.com/arok59520" target="_blank" rel="noopener noreferrer">arok59520</a>
+                (Sketchfab Free Standard licence).
+                All three were simplified, recoloured and rigged with Adobe Mixamo;
+                their motion clips are from Adobe Mixamo.
+            </p>
+            <p class="credits-attrib">
+                <span class="credits-head">Horse</span>
+                This work is based on
+                <a href="https://sketchfab.com/3d-models/horse-a6f860e43e364619bccb174a1ac7d0c9"
+                   target="_blank" rel="noopener noreferrer">"Horse"</a>
+                by <a href="https://sketchfab.com/henrysteve973" target="_blank" rel="noopener noreferrer">henrysteve973</a>,
+                licensed under
+                <a href="http://creativecommons.org/licenses/by/4.0/"
+                   target="_blank" rel="noopener noreferrer">CC-BY-4.0</a>.
+            </p>
+            <p class="credits-attrib">
+                <span class="credits-head">Guns</span>
+                <a href="https://quaternius.itch.io/ultimate-guns-pack"
+                   target="_blank" rel="noopener noreferrer">Ultimate Gun Pack</a>
+                by <a href="https://quaternius.com" target="_blank" rel="noopener noreferrer">Quaternius</a>,
+                released under CC0, recoloured for this game.
+                Lever-action repeater from the
+                <a href="https://polyyai.itch.io/3d-low-poly-guns-pack"
+                   target="_blank" rel="noopener noreferrer">3D Low-Poly Guns Pack</a>
+                by <a href="https://polyy.ai" target="_blank" rel="noopener noreferrer">Polyy</a> (CC0).
             </p>
             <p class="credits-attrib">
                 <span class="credits-head">Sound Effects</span>
                 <a href="https://kenney.nl/assets/rpg-audio"
-                   target="_blank" rel="noopener noreferrer">RPG Audio</a>
-                and
+                   target="_blank" rel="noopener noreferrer">RPG Audio</a>,
                 <a href="https://kenney.nl/assets/ui-audio"
                    target="_blank" rel="noopener noreferrer">UI Audio</a>
-                by <a href="https://kenney.nl" target="_blank" rel="noopener noreferrer">Kenney</a>,
-                released under
+                and
+                <a href="https://kenney.nl/assets/impact-sounds"
+                   target="_blank" rel="noopener noreferrer">Impact Sounds</a>
+                by <a href="https://kenney.nl" target="_blank" rel="noopener noreferrer">Kenney</a>.
+                Gunfire from
+                <a href="https://opengameart.org/content/the-free-firearm-sound-library"
+                   target="_blank" rel="noopener noreferrer">The Free Firearm Sound Library</a>
+                (Ben Jaszczak, Brian Nelson, Kevin Heras, Matthew Nanney); gun handling from
+                OpenGameArt's "Equipment Clicks III", "Gun Reload Sound Effects" and
+                "Shotgun Reload Sound effects"; hooves by D4XX, StephenSaldanha and
+                MrFizzywig (via OpenGameArt's "Horse gallop on different surfaces").
+                All released under
                 <a href="https://creativecommons.org/publicdomain/zero/1.0/"
                    target="_blank" rel="noopener noreferrer">CC0</a>.
-                Piano synthesised in-engine.
+                Piano and Dead Eye cues synthesised in-engine.
             </p>
 
             <p class="credits-dim">Press any key to return</p>

@@ -7,8 +7,8 @@
  * via the POST /__shot/N endpoint (vite-plugin-shot-writer.js).
  *
  * This page loads the MAP ONLY. It never imports FBXLoader and
- * never touches static/character/Y Bot.fbx, so the character
- * cannot appear in the art — that is structural, not a filter.
+ * never touches anything in static/character/, so the player
+ * character cannot appear in the art — that is structural, not a filter.
  *
  * Scene setup mirrors script.js so the stills look like the game:
  *   fog/background  script.js:65-66      lights  script.js:251-264

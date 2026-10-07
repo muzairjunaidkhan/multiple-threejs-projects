@@ -7,9 +7,10 @@
  * the street is quieter and off to one side. Footsteps, UI and money are
  * flat 2D — they have no world position worth panning.
  *
- * Samples are Kenney CC0 packs (see static/sounds/README.txt). The piano
- * has no sample: it is synthesised once into an AudioBuffer and then
- * played through the same positional pool as everything else.
+ * Samples are CC0 recordings (see static/sounds/README.txt): Kenney packs for
+ * doors, steps and impacts; real firearms, gun handling and horses for the
+ * rest. The piano and Dead Eye's cues have no sample: they are synthesised
+ * once into AudioBuffers and played through the same voice pools.
  *
  * Design notes that are easy to get wrong:
  *  · NO AudioContext is created at import time — `settings` is a plain
@@ -29,13 +30,23 @@ import * as THREE from 'three'
 // ─────────────────────────────────────────
 const STORE_KEY = 'deadmesa.audio.v1'
 
-export const settings = { master: 0.7, mute: false }
+/** Selectable footstep surfaces — each maps to the `step_<set>` manifest entry. */
+export const FOOTSTEP_SETS = ['dirt', 'gravel', 'wood', 'soft']
+
+export const settings = {
+    master:         0.7,
+    mute:           false,
+    footstepVolume: 0.35,      // its own slider: footsteps are the most-repeated sound
+    footstepSet:    'dirt',
+}
 
 try {
     const raw = JSON.parse(localStorage.getItem(STORE_KEY))
     if (raw && typeof raw === 'object') {
         if (Number.isFinite(raw.master)) settings.master = THREE.MathUtils.clamp(raw.master, 0, 1)
         if (typeof raw.mute === 'boolean') settings.mute = raw.mute
+        if (Number.isFinite(raw.footstepVolume)) settings.footstepVolume = THREE.MathUtils.clamp(raw.footstepVolume, 0, 1)
+        if (FOOTSTEP_SETS.includes(raw.footstepSet)) settings.footstepSet = raw.footstepSet
     }
 } catch { /* private mode — defaults are fine */ }
 
@@ -57,10 +68,41 @@ const MANIFEST = {
     board_close: ['board_close.ogg'],
     swing:       ['swing_1.ogg', 'swing_2.ogg'],
     land_hard:   ['land_hard.ogg'],
-    footstep:    ['footstep_1.ogg', 'footstep_2.ogg', 'footstep_3.ogg',
-                  'footstep_4.ogg', 'footstep_5.ogg', 'footstep_6.ogg'],
+    // Footstep surfaces (Kenney Impact Sounds). Played via playFootstep(), which
+    // picks the active set and loudness-normalises it — see FOOTSTEP_TARGET_DB.
+    step_dirt:   ['step_dirt_1.ogg', 'step_dirt_2.ogg', 'step_dirt_3.ogg',
+                  'step_dirt_4.ogg', 'step_dirt_5.ogg'],
+    step_gravel: ['step_gravel_1.ogg', 'step_gravel_2.ogg', 'step_gravel_3.ogg',
+                  'step_gravel_4.ogg', 'step_gravel_5.ogg'],
+    step_wood:   ['step_wood_1.ogg', 'step_wood_2.ogg', 'step_wood_3.ogg',
+                  'step_wood_4.ogg', 'step_wood_5.ogg'],
+    step_soft:   ['step_soft_1.ogg', 'step_soft_2.ogg', 'step_soft_3.ogg',
+                  'step_soft_4.ogg', 'step_soft_5.ogg'],
     money_gain:  ['money_gain.ogg'],
     money_loss:  ['money_loss.ogg'],
+    // Gunfire: real recordings (The Free Firearm Sound Library, CC0), cut at the shot with its
+    // own echo. The player hears near-distance recordings; a bandit's shot is the same guns
+    // recorded from mid distance, played positionally.
+    gunshot_revolver: ['gun_revolver_1.ogg', 'gun_revolver_2.ogg'],
+    gunshot_shotgun:  ['gun_shotgun_1.ogg', 'gun_shotgun_2.ogg'],
+    gunshot_rifle:    ['gun_rifle_1.ogg', 'gun_rifle_2.ogg', 'gun_rifle_3.ogg'],
+    gunshot:          ['gun_far_1.ogg', 'gun_far_2.ogg'],
+    // Working the guns: recordings of a real bolt action, cartridges and a shotgun (OpenGameArt
+    // CC0), assembled to combat.js's reload timings
+    dry_fire:     ['dry_fire.ogg'],
+    reload:       ['reload_revolver.ogg'],      // gate, six cartridges, gate, hammer — 1.6 s
+    reload_break: ['reload_break.ogg'],         // latch, open, two rounds, shut — 1.3 s
+    reload_tube:  ['shell_insert.ogg'],         // one round into a tube (played per round)
+    cycle_pump:   ['cycle_pump.ogg'],
+    cycle_lever:  ['cycle_lever.ogg'],
+    cycle_bolt:   ['cycle_bolt.ogg'],
+    // Horses (OpenGameArt "Horse gallop on different surfaces", the CC0 recordings)
+    hoof:         ['hoof_1.ogg', 'hoof_2.ogg'],      // single clops: a walk
+    gallop:       ['gallop_1.ogg', 'gallop_2.ogg'],  // one whole stride: played once per gallop cycle
+    // Impacts (Kenney Impact Sounds)
+    hit:         ['hit_1.ogg', 'hit_2.ogg', 'hit_3.ogg'],           // a bullet finds a body
+    bodyfall:    ['bodyfall_1.ogg', 'bodyfall_2.ogg'],
+    bullet:      ['bullet_1.ogg', 'bullet_2.ogg', 'bullet_3.ogg'],  // a bullet finds wood / dirt
     ui_move:     ['ui_move.ogg'],
     ui_select:   ['ui_select.ogg'],
     ui_back:     ['ui_back.ogg'],
@@ -87,6 +129,40 @@ const WORLD_VOICES = 12   // realistic concurrency is 1-3; headroom for layered 
 const UI_VOICES    = 6
 
 // ─────────────────────────────────────────
+// FOOTSTEP LOUDNESS
+//
+// Kenney normalises every file to ~-1 dBFS PEAK, so peak says nothing about how
+// loud a sound feels — the previous footsteps averaged -11 dBFS "active" RMS at
+// unity gain and were then played at 0.45-0.80, i.e. about as loud as a door.
+// Instead each footstep buffer is scaled at decode time to the same active RMS,
+// so every surface set sits at one level and the slider means the same thing
+// whichever set is chosen.
+//
+// -18 dBFS at unity; with the default slider (0.35) and master (0.7) that lands
+// a walking step near -34 dBFS and a running step near -30 dBFS — roughly 12 dB
+// and 14 dB below what shipped. Measured, not guessed (see the session notes).
+// ─────────────────────────────────────────
+const FOOTSTEP_TARGET_DB = -18
+const FOOTSTEP_TARGET    = Math.pow(10, FOOTSTEP_TARGET_DB / 20)
+
+/** RMS over only the samples above 10% of peak, so silent padding and long
+ *  quiet tails don't flatter a short transient like a footfall. */
+function activeRms(buf) {
+    const d = buf.getChannelData(0)
+    let peak = 0
+    for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a }
+    const gate = peak * 0.1
+    let sum = 0, n = 0
+    for (let i = 0; i < d.length; i++) { if (Math.abs(d[i]) > gate) { sum += d[i] * d[i]; n++ } }
+    return n ? Math.sqrt(sum / n) : 0
+}
+
+function normaliseFootstep(buf) {
+    const rms = activeRms(buf)
+    buf._norm = rms > 0 ? THREE.MathUtils.clamp(FOOTSTEP_TARGET / rms, 0.15, 4) : 1
+}
+
+// ─────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────
 let _listener = null
@@ -111,7 +187,9 @@ export const ready = new Promise((res) => { _resolveReady = res })
 // SETTINGS PLUMBING
 // ─────────────────────────────────────────
 export function applySettings() {
-    settings.master = THREE.MathUtils.clamp(Number(settings.master) || 0, 0, 1)
+    settings.master         = THREE.MathUtils.clamp(Number(settings.master) || 0, 0, 1)
+    settings.footstepVolume = THREE.MathUtils.clamp(Number(settings.footstepVolume) || 0, 0, 1)
+    if (!FOOTSTEP_SETS.includes(settings.footstepSet)) settings.footstepSet = 'dirt'
     if (_listener) _listener.setMasterVolume(settings.mute ? 0 : settings.master)
     try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)) } catch { /* ignore */ }
 }
@@ -155,6 +233,7 @@ export function initAudio(camera, scene) {
     applySettings()
     armUnlock()
     preloadAll()
+    renderSynthSounds().catch(err => console.warn('[audio] synth failed', err))
 }
 
 /**
@@ -193,7 +272,10 @@ function preloadAll() {
             jobs.push(new Promise((res) => {
                 loader.load(
                     SOUND_DIR + file,
-                    (buf) => { bufs[i] = buf; _loaded.push(file); res() },
+                    (buf) => {
+                        if (name.startsWith('step_')) normaliseFootstep(buf)
+                        bufs[i] = buf; _loaded.push(file); res()
+                    },
                     undefined,
                     // AudioLoader routes here instead of throwing. A missing or
                     // undecodable file just never registers, and every play call
@@ -271,11 +353,11 @@ function pickBuffer(name) {
 
 function startVoice(voice, buf, opts, name) {
     if (name) _counts.set(name, (_counts.get(name) ?? 0) + 1)
-    const { volume = 1, rate = 1, rateJitter = 0 } = opts
+    const { volume = 1, rate = 1, rateJitter = 0, normalize = false } = opts
     voice.stop()
     voice.setBuffer(buf)
     voice.setLoop(false)
-    setVoiceGain(voice, volume)
+    setVoiceGain(voice, volume * (normalize ? (buf._norm ?? 1) : 1))
     // A touch of detune so repeats (footsteps especially) never sound identical.
     const r = rate * (1 + (Math.random() * 2 - 1) * rateJitter)
     voice.playbackRate = r
@@ -303,6 +385,22 @@ export function play2D(name, opts = {}) {
 }
 
 export function playUI(name, opts = {}) { play2D(name, opts) }
+
+/**
+ * One footfall on the currently selected surface. `volume` is RELATIVE (walk
+ * vs run); the Footsteps slider scales it, and the buffer's own loudness is
+ * normalised at decode time — so callers never have to know how hot a sample is.
+ */
+export function playFootstep(opts = {}) {
+    if (!canPlay()) return
+    const vol = (opts.volume ?? 1) * settings.footstepVolume
+    if (vol < 0.002) return                       // slider at zero → truly silent
+    const name = `step_${settings.footstepSet}`
+    const buf  = pickBuffer(name) ?? pickBuffer('step_dirt')
+    if (!buf) return
+    // Counted under one name so tests don't have to know which surface is active.
+    startVoice(takeVoice(_ui), buf, { ...opts, volume: vol, normalize: true }, 'footstep')
+}
 
 /** Positional. `target` is an Object3D (world position is read) or a Vector3. */
 export function playAt(target, name, opts = {}) {
@@ -452,6 +550,88 @@ export function playPianoAt(target) {
 }
 
 // ─────────────────────────────────────────
+// SYNTHESISED — the few sounds with no recording: Dead Eye's heartbeat, whooshes and
+// mark click (and the piano, above). Guns and horses are recordings (MANIFEST).
+// ─────────────────────────────────────────
+function noiseBuffer(oac, seconds) {
+    const b = oac.createBuffer(1, Math.ceil(oac.sampleRate * seconds), oac.sampleRate)
+    const d = b.getChannelData(0)
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+    return b
+}
+
+/** Noise through a filter with an attack-decay envelope, into `dest`. */
+function noiseHit(oac, noise, dest, when, { type, freq, q = 0.7, gain, attack = 0.001, decay }) {
+    const src = oac.createBufferSource()
+    src.buffer = noise
+    const f = oac.createBiquadFilter()
+    f.type = type; f.frequency.value = freq; f.Q.value = q
+    const g = oac.createGain()
+    g.gain.setValueAtTime(0.0001, when)
+    g.gain.exponentialRampToValueAtTime(gain, when + attack)
+    g.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay)
+    src.connect(f); f.connect(g); g.connect(dest)
+    src.start(when, Math.random() * 0.5); src.stop(when + attack + decay + 0.02)
+}
+
+/** Metallic clicks at `times` (s): short bandpassed noise ticks with a faint ring. */
+async function renderClicks(len, times, { freq = 3200, gain = 0.6 } = {}) {
+    const rate = _ctx.sampleRate
+    const oac = new OfflineAudioContext(1, Math.ceil(rate * len), rate)
+    const noise = noiseBuffer(oac, 0.2)
+    for (const [t, f, g] of times) {
+        noiseHit(oac, noise, oac.destination, t, { type: 'bandpass', freq: (f ?? 1) * freq, q: 3, gain: (g ?? 1) * gain, decay: 0.012 })
+        noiseHit(oac, noise, oac.destination, t + 0.004, { type: 'bandpass', freq: (f ?? 1) * freq * 0.62, q: 8, gain: (g ?? 1) * gain * 0.35, decay: 0.05 })
+    }
+    return oac.startRendering()
+}
+
+/** Low double thump ("lub-dub") for Dead Eye. */
+async function renderHeartbeat() {
+    const rate = _ctx.sampleRate
+    const oac = new OfflineAudioContext(1, Math.ceil(rate * 0.5), rate)
+    for (const [t, g] of [[0.01, 0.9], [0.17, 0.6]]) {
+        const o = oac.createOscillator()
+        o.type = 'sine'
+        o.frequency.setValueAtTime(62, t)
+        o.frequency.exponentialRampToValueAtTime(38, t + 0.12)
+        const gn = oac.createGain()
+        gn.gain.setValueAtTime(0.0001, t)
+        gn.gain.exponentialRampToValueAtTime(g, t + 0.012)
+        gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.16)
+        o.connect(gn); gn.connect(oac.destination)
+        o.start(t); o.stop(t + 0.18)
+    }
+    return oac.startRendering()
+}
+
+/** A falling filtered-noise swoosh — the world slowing down (or, reversed, speeding up). */
+async function renderWhoosh(down = true) {
+    const rate = _ctx.sampleRate, len = 0.7
+    const oac = new OfflineAudioContext(1, Math.ceil(rate * len), rate)
+    const src = oac.createBufferSource()
+    src.buffer = noiseBuffer(oac, len)
+    const f = oac.createBiquadFilter()
+    f.type = 'bandpass'; f.Q.value = 1.4
+    f.frequency.setValueAtTime(down ? 2400 : 300, 0)
+    f.frequency.exponentialRampToValueAtTime(down ? 220 : 2600, len * 0.9)
+    const g = oac.createGain()
+    g.gain.setValueAtTime(0.0001, 0)
+    g.gain.exponentialRampToValueAtTime(0.7, 0.08)
+    g.gain.exponentialRampToValueAtTime(0.0001, len)
+    src.connect(f); f.connect(g); g.connect(oac.destination)
+    src.start(0)
+    return oac.startRendering()
+}
+
+async function renderSynthSounds() {
+    _buffers.set('heartbeat', [await renderHeartbeat()])
+    _buffers.set('deadeye_in', [await renderWhoosh(true)])
+    _buffers.set('deadeye_out', [await renderWhoosh(false)])
+    _buffers.set('deadeye_mark', [await renderClicks(0.12, [[0.005, 1.6, 0.8]], { freq: 3000 })])
+}
+
+// ─────────────────────────────────────────
 // TEST SURFACE — used by the headless verification script.
 // ─────────────────────────────────────────
 export function getDebugState() {
@@ -463,6 +643,9 @@ export function getDebugState() {
         sounds:    [..._buffers.keys()],
         playing:   _world.filter(v => v.isPlaying).length + _ui.filter(v => v.isPlaying).length,
         counts:    Object.fromEntries(_counts),
+        // Per-surface decode-time gain, so a test can confirm every set was normalised.
+        stepNorms: Object.fromEntries(FOOTSTEP_SETS.map(s =>
+            [s, (_buffers.get(`step_${s}`) ?? []).map(b => +(b._norm ?? 0).toFixed(3))])),
         settings:  { ...settings },
     }
 }

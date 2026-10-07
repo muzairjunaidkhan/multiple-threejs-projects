@@ -751,6 +751,332 @@ kbd {
     100% { opacity: 0; transform: translateY(-8px); }
 }
 
+/* ── Revolver: six chambers under the cash; spent ones go hollow ── */
+#ammo {
+    position: fixed;
+    top: 72px;
+    right: 18px;
+    z-index: 300;
+    display: none;                 /* combat.setHudVisible reveals it */
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    pointer-events: none;
+    user-select: none;
+    font-family: 'Courier New', monospace;
+}
+#ammo .ammo-pips { display: flex; gap: 5px; }
+#ammo .ammo-pips i {
+    width: 7px;
+    height: 16px;
+    border-radius: 3px 3px 1px 1px;               /* a cartridge, nose up */
+    background: linear-gradient(#e9c46a 0 40%, #b08d3c 40% 100%);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    transition: opacity 0.12s ease;
+}
+#ammo .ammo-pips i.spent { background: transparent; box-shadow: inset 0 0 0 1px rgba(233,196,106,0.55); }
+#ammo .ammo-reload {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: #e9c46a;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    opacity: 0;
+}
+#ammo.reloading .ammo-reload { opacity: 1; animation: ammo-blink 0.5s steps(2) infinite; }
+@keyframes ammo-blink { 50% { opacity: 0.35; } }
+
+/* Health: a thin bar above the chambers; it pulses red when low. */
+#ammo .hp-bar {
+    width: 92px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.55);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.8), inset 0 0 0 1px rgba(255,255,255,0.12);
+    overflow: hidden;
+}
+#ammo .hp-fill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(#e2574c, #b5372d);
+    transition: width 0.18s ease-out;
+}
+#ammo.hp-low .hp-fill { animation: hp-pulse 0.8s ease-in-out infinite; }
+@keyframes hp-pulse { 50% { filter: brightness(1.6); } }
+
+/* Being shot: a red edge that flashes in and drains away. */
+#damage-vignette {
+    position: fixed;
+    inset: 0;
+    z-index: 250;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(ellipse at center, rgba(160,0,0,0) 45%, rgba(150,10,5,0.75) 100%);
+}
+#damage-vignette.flash { animation: vignette-hit 0.7s ease-out forwards; }
+@keyframes vignette-hit {
+    0%   { opacity: var(--hit, 0.6); }
+    100% { opacity: 0; }
+}
+
+/* Death: the world drains to dark sepia and a title card fades up. */
+#death-card {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(ellipse at center, rgba(40,10,5,0.55), rgba(10,4,2,0.92));
+    transition: opacity 0.9s ease;
+    font-family: 'Courier New', monospace;
+}
+#death-card.show { opacity: 1; }
+#death-card .death-title {
+    font-size: 54px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #c8402f;
+    text-shadow: 0 3px 10px rgba(0,0,0,0.9);
+}
+#death-card .death-sub {
+    font-size: 16px;
+    letter-spacing: 0.08em;
+    color: #e6d3b3;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.9);
+}
+
+/* Crosshair hit markers: white ring on a hit, red and bigger on a kill. */
+#crosshair.hit  { box-shadow: 0 0 0 3px rgba(255,255,255,0.9); }
+#crosshair.kill { background: #ff5a4a; box-shadow: 0 0 0 4px rgba(255,90,74,0.85); }
+
+/* ── Weapon readout: name, then rounds loaded (pips) and in reserve; Dead Eye under health ── */
+#ammo .wpn-name {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #efe3c8;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+#ammo .ammo-row { display: flex; align-items: center; gap: 8px; }
+#ammo .ammo-reserve {
+    min-width: 22px;
+    text-align: right;
+    font-size: 15px;
+    font-weight: 700;
+    color: #e9c46a;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+#ammo .ammo-reserve:not(:empty)::before { content: '| '; color: rgba(233,196,106,0.5); }
+#ammo .ammo-pips.shells i {                         /* shotgun shells: red hull, brass head */
+    width: 9px;
+    background: linear-gradient(#c0392b 0 70%, #d4a24c 70% 100%);
+    border-radius: 2px;
+}
+#ammo .ammo-pips.shells i.spent { background: transparent; box-shadow: inset 0 0 0 1px rgba(192,57,43,0.6); }
+#ammo .de-bar {
+    width: 92px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0,0,0,0.55);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    overflow: hidden;
+}
+#ammo .de-fill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(90deg, #b8860b, #f2c94c);
+    transition: width 0.2s linear;
+}
+#ammo.de-active .de-fill { background: linear-gradient(90deg, #d35400, #ffb347); }
+
+/* ── Dead Eye: the canvas drains to sepia under a burnt-orange vignette ── */
+#canvas.deadeye { filter: sepia(0.85) saturate(1.35) contrast(1.08) brightness(0.92); }
+#deadeye-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 240;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    background: radial-gradient(ellipse at center, rgba(120,40,0,0) 40%, rgba(110,35,0,0.55) 100%);
+}
+#deadeye-overlay.show { opacity: 1; }
+
+/* ── Scope: a black mask with a round window and fine crosshairs ── */
+#scope {
+    position: fixed;
+    inset: 0;
+    z-index: 210;
+    pointer-events: none;
+    display: none;
+    background:
+        linear-gradient(rgba(0,0,0,0.8), rgba(0,0,0,0.8)) center / 1px 46vmin no-repeat,
+        linear-gradient(90deg, rgba(0,0,0,0.8), rgba(0,0,0,0.8)) center / 46vmin 1px no-repeat,
+        radial-gradient(circle at center, transparent 0 calc(30vmin - 1px), #000 30vmin);
+}
+#scope.show { display: block; }
+
+/* ── Weapon wheel (hold Tab) ── */
+#weapon-wheel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 440px;
+    height: 440px;
+    transform: translate(-50%, -50%) scale(0.92);
+    z-index: 520;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(18,12,8,0.55) 0 26%, rgba(18,12,8,0.82) 27% 64%, rgba(18,12,8,0) 66%);
+    font-family: 'Courier New', monospace;
+}
+#weapon-wheel.open { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#weapon-wheel .ww-seg {
+    position: absolute;
+    width: 128px;
+    height: 92px;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border-radius: 12px;
+    border: 1px solid rgba(233,196,106,0.18);
+    background: rgba(40,28,18,0.6);
+    transition: background 0.1s ease, border-color 0.1s ease, transform 0.1s ease;
+}
+#weapon-wheel .ww-seg.hover {
+    background: rgba(120,84,40,0.75);
+    border-color: #e9c46a;
+    transform: translate(-50%, -50%) scale(1.08);
+}
+#weapon-wheel .ww-seg.equipped::after {
+    content: '';
+    position: absolute;
+    top: 6px; right: 8px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #e9c46a;
+}
+#weapon-wheel .ww-seg.locked { opacity: 0.38; }
+#weapon-wheel .ww-icon { height: 40px; display: flex; align-items: center; font-size: 26px; }
+#weapon-wheel .ww-icon img { max-width: 110px; max-height: 40px; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.8)); }
+#weapon-wheel .ww-cat { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #cdbb94; }
+#weapon-wheel .ww-ammo { font-size: 11px; color: #e9c46a; min-height: 13px; }
+#weapon-wheel .ww-centre {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 150px;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: #efe3c8;
+}
+#weapon-wheel .ww-name { font-size: 14px; font-weight: 700; letter-spacing: 0.06em; }
+#weapon-wheel .ww-sub  { margin-top: 4px; font-size: 11px; color: #cdbb94; }
+#weapon-wheel .ww-hint { margin-top: 6px; font-size: 10px; color: #e9c46a; }
+
+/* ── Gunsmith's panel ── */
+#gunsmith {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,6,3,0.55);
+    font-family: 'Courier New', monospace;
+}
+#gunsmith.open { display: flex; }
+#gunsmith .gs-panel {
+    width: min(760px, calc(100vw - 32px));
+    max-height: calc(100vh - 48px);
+    display: flex;
+    flex-direction: column;
+    border-radius: 10px;
+    border: 1px solid rgba(233,196,106,0.35);
+    background: linear-gradient(#2b1d12, #1c130c);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    color: #efe3c8;
+}
+#gunsmith .gs-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 18px 22px 12px;
+    border-bottom: 1px solid rgba(233,196,106,0.2);
+}
+#gunsmith .gs-title { font-size: 26px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: #e9c46a; }
+#gunsmith .gs-sub { font-size: 11px; letter-spacing: 0.12em; color: #cdbb94; }
+#gunsmith .gs-cash { font-size: 24px; font-weight: 700; color: #6fcf5f; }
+#gunsmith .gs-tabs { display: flex; gap: 6px; padding: 10px 22px 0; }
+#gunsmith button {
+    font: inherit;
+    cursor: pointer;
+    color: #efe3c8;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(233,196,106,0.25);
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+#gunsmith button:hover:not(:disabled) { background: rgba(233,196,106,0.18); border-color: #e9c46a; }
+#gunsmith button:disabled { cursor: default; opacity: 0.45; }
+#gunsmith .gs-tabs button.on { background: rgba(233,196,106,0.22); border-color: #e9c46a; color: #fff; }
+#gunsmith .gs-list { overflow-y: auto; padding: 10px 22px; display: flex; flex-direction: column; gap: 8px; }
+#gunsmith .gs-row {
+    display: grid;
+    grid-template-columns: 120px 1fr auto;
+    gap: 14px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.04);
+}
+#gunsmith .gs-row.is-owned { background: rgba(111,207,95,0.06); }
+#gunsmith .gs-icon { display: flex; justify-content: center; align-items: center; height: 48px; }
+#gunsmith .gs-icon img { max-width: 118px; max-height: 48px; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.8)); }
+#gunsmith .gs-ammo-icon { border-radius: 6px; width: 56px; margin: 0 auto; }
+#gunsmith .gs-ammo-icon.revolver { background: repeating-linear-gradient(90deg, #e9c46a 0 6px, transparent 6px 10px); }
+#gunsmith .gs-ammo-icon.rifle    { background: repeating-linear-gradient(90deg, #d4a24c 0 5px, transparent 5px 11px); }
+#gunsmith .gs-ammo-icon.shotgun  { background: repeating-linear-gradient(90deg, #c0392b 0 8px, transparent 8px 12px); }
+#gunsmith .gs-name { font-size: 15px; font-weight: 700; }
+#gunsmith .gs-cat  { font-size: 10px; font-weight: 400; letter-spacing: 0.1em; text-transform: uppercase; color: #cdbb94; margin-left: 6px; }
+#gunsmith .gs-blurb { font-size: 12px; color: #cdbb94; margin-top: 2px; }
+#gunsmith .gs-carry { font-size: 12px; margin-top: 4px; }
+#gunsmith .gs-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 14px; margin-top: 6px; }
+#gunsmith .gs-stat { display: grid; grid-template-columns: 70px 1fr; align-items: center; font-size: 10px; color: #cdbb94; }
+#gunsmith .gs-stat i { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
+#gunsmith .gs-stat b { display: block; height: 100%; background: #e9c46a; }
+#gunsmith .gs-buy button { min-width: 92px; }
+#gunsmith .gs-buy button.owned { color: #6fcf5f; border-color: rgba(111,207,95,0.4); opacity: 0.9; }
+#gunsmith .gs-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 22px 16px;
+    border-top: 1px solid rgba(233,196,106,0.2);
+    font-size: 12px;
+}
+#gunsmith .gs-note { color: #6fcf5f; }
+#gunsmith kbd { font-family: inherit; font-size: 10px; opacity: 0.7; margin-left: 4px; }
+@media (max-width: 560px) {
+    #gunsmith .gs-row { grid-template-columns: 1fr; }
+    #weapon-wheel { width: 340px; height: 340px; }
+    #weapon-wheel .ww-seg { width: 100px; height: 80px; }
+}
+
 #perf-panel {
     position: fixed;
     bottom: 8px;
