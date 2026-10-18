@@ -2,8 +2,8 @@
  * ═══════════════════════════════════════════════════════════
  * horse.js — horses to ride
  * ───────────────────────────────────────────────────────────
- * The model is static/character/cast/horse.glb: "Horse" by henrysteve973
- * (Sketchfab), CC-BY 4.0, rigged and animated (walk, gallop with left/right
+ * The model is static/character/cast/horse.glb: "Horse" by Henry S
+ * (Sketchfab @henry_7), CC-BY 4.0, rigged and animated (walk, gallop with left/right
  * turning variants, three idles, eating, rearing …). It was slimmed by a
  * scratchpad tool: 15 of its 28 clips, textures down to 2048 at most.
  *

@@ -30,7 +30,8 @@ SOURCE / LICENCE  (credited in-game, CREDITS screen)
             https://sketchfab.com/3d-models/cowboy-western-01-9df692aa75c24fbe9ec695f5626a1cb7
   bandits   "Cowboy Character Model" by arok59520 — Sketchfab Free Standard licence
             https://sketchfab.com/3d-models/cowboy-character-model-86be1d4e5a4640788c4cd9b16256b159
-  horse     "Horse" by henrysteve973 — CC-BY 4.0
+  horse     "Horse" by Henry S (https://sketchfab.com/henry_7; horse.glb's metadata still carries the
+            old username henrysteve973) — CC-BY 4.0
             https://sketchfab.com/3d-models/horse-a6f860e43e364619bccb174a1ac7d0c9
   clips     Adobe Mixamo (https://www.mixamo.com), downloaded as FBX, without skin, 30 fps
 

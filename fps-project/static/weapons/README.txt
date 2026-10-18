@@ -20,7 +20,7 @@ modelled at half scale).
 
 SOURCE / LICENCE  (both CC0 1.0; credited in the in-game CREDITS screen anyway)
 ----------------
-  Ultimate Gun Pack by Quaternius        https://quaternius.itch.io/ultimate-guns-pack
+  Ultimate Gun Pack by Quaternius        https://quaternius.itch.io/50-lowpoly-guns   ("Ultimate Gun Pack by Quaternius.zip")
   3D Low-Poly Guns Pack by Polyy (low-poly LOD edition)
                                          https://polyyai.itch.io/3d-low-poly-guns-pack
       Polyy's own note (not a licence condition): please don't resell their pack unmodified.

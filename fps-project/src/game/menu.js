@@ -199,14 +199,14 @@ function buildCredits() {
                 This work is based on
                 <a href="https://sketchfab.com/3d-models/horse-a6f860e43e364619bccb174a1ac7d0c9"
                    target="_blank" rel="noopener noreferrer">"Horse"</a>
-                by <a href="https://sketchfab.com/henrysteve973" target="_blank" rel="noopener noreferrer">henrysteve973</a>,
+                by <a href="https://sketchfab.com/henry_7" target="_blank" rel="noopener noreferrer">Henry S</a>,
                 licensed under
                 <a href="http://creativecommons.org/licenses/by/4.0/"
                    target="_blank" rel="noopener noreferrer">CC-BY-4.0</a>.
             </p>
             <p class="credits-attrib">
                 <span class="credits-head">Guns</span>
-                <a href="https://quaternius.itch.io/ultimate-guns-pack"
+                <a href="https://quaternius.itch.io/50-lowpoly-guns"
                    target="_blank" rel="noopener noreferrer">Ultimate Gun Pack</a>
                 by <a href="https://quaternius.com" target="_blank" rel="noopener noreferrer">Quaternius</a>,
                 released under CC0, recoloured for this game.
