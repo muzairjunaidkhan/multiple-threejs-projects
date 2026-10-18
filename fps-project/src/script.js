@@ -2061,9 +2061,10 @@ function tick() {
             updateCapsuleHelper()
             const vel = characterBody.linvel()
             if (combat.isAiming() && !player.locked()) {
-                // square up to where the camera looks (the camera sits at +yaw, looking back); a
-                // revolver stands a little side-on, so the clip's two-handed grip already points there
-                const blade = weapons.equippedWeapon()?.hold === 'pistol' ? player.PISTOL_ARM_YAW : 0
+                // square up to where the camera looks (the camera sits at +yaw, looking back), side-on:
+                // a revolver a little (the clip's two-handed grip then points there), a long gun more
+                const hold = weapons.equippedWeapon()?.hold
+                const blade = hold === 'pistol' ? player.PISTOL_ARM_YAW : hold === 'rifle' ? player.RIFLE_BODY_YAW : 0
                 _targetQuat.setFromAxisAngle(_axisY, camYaw + Math.PI - blade)
                 characterModel.quaternion.slerp(_targetQuat, Math.min(1, 20 * realDelta))
             } else if (player.actionKey() !== 'roll' && (Math.abs(vel.x) > 0.3 || Math.abs(vel.z) > 0.3)) {
@@ -2387,6 +2388,7 @@ async function startWorld() {
             getModel: () => characterModel,
             body: player,                                  // fire / reload / hit clips
             canAim: () => !player.locked(),                // not mid-roll, mid-emote, dead
+            isMounted: () => !!horse.riding(),             // a rider's left hand stays on the reins
             kick: (rad) => { targetPitch = Math.max(AIM_CAM.minPitch, targetPitch - rad) },
             onPlayerDeath,
             hint: (text) => showSubtitle(text, 2500),

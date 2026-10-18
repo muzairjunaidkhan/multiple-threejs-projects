@@ -60,6 +60,9 @@ const LEFT_ARM = /^mixamorigLeft(Shoulder|Arm|ForeArm|Hand)/
 // Mixamo's Shooting is a two-handed stance with the gun arm ~30° left of the chest: a revolver
 // aim turns the body this much to the right of the target so the gun points at it unaided.
 export const PISTOL_ARM_YAW = 0.51
+// A long gun is held side-on: the body turned right of the target so the left shoulder comes
+// forward and the left hand reaches the fore-end with a bent elbow.
+export const RIFLE_BODY_YAW = 0.6
 
 let model = null, mixer = null, clips = null
 const parts = new Map()          // clip name → { lower, upper, dur, wBase, wOver, ts, running }
@@ -389,6 +392,18 @@ function rotateWorld(bone, axis, angle) {
     bone.quaternion.premultiply(_q)
 }
 
+let clean = null                 // [bone, quaternion, position] as the mixer last left them
+function snapshotClean() {
+    if (!clean) {
+        clean = []
+        model.traverse(o => { if (o.isBone) clean.push([o, new THREE.Quaternion(), new THREE.Vector3()]) })
+    }
+    for (const [b, q, p] of clean) { q.copy(b.quaternion); p.copy(b.position) }
+}
+function restoreClean() {
+    if (clean) for (const [b, q, p] of clean) { b.quaternion.copy(q); b.position.copy(p) }
+}
+
 const _right = new THREE.Vector3(), _fwd = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0)
 export const MAX_TWIST = 1.6                  // rad the back turns in the saddle (23° a bone; the shoulders get ¾)
 const TWIST_BONES = ['Spine', 'Spine1', 'Spine2', 'Neck']
@@ -400,7 +415,14 @@ export function animate(dt, { rider = null, aimYaw = 0, aim = 0 } = {}) {
     // the chest turns so the revolver arm (PISTOL_ARM_YAW left of it in the clip) lines up
     const twist = aim > 0 ? THREE.MathUtils.clamp(aimYaw - PISTOL_ARM_YAW, -MAX_TWIST, MAX_TWIST) * aim : 0
     if (!mixer) return
+    // AnimationMixer only writes a bone when its animated value CHANGES. A held frame (the aim
+    // pose between shots) or a near-still clip (sitting in the saddle) leaves bones unwritten, and
+    // the corrections made after the mixer (here and in combat.js) would pile up frame on frame,
+    // bending and wringing the body further each time. So every frame starts from the clean
+    // animated pose: restored before the mixer, snapshotted right after it.
+    restoreClean()
     mixer.update(dt)
+    snapshotClean()
     model.updateMatrixWorld(true)
     model.getWorldQuaternion(_mq)
     _fwd.set(0, 0, 1).applyQuaternion(_mq)
