@@ -7,7 +7,6 @@
  */
 
 import * as THREE from 'three'
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import RAPIER from '@dimforge/rapier3d-compat'
 import GUI from 'lil-gui'
@@ -20,6 +19,14 @@ import * as missions from './game/missions.js'
 import { initMenu, showMainMenu, showPauseMenu, hideAllMenus } from './game/menu.js'
 import { initCutscene, playIntro } from './game/cutscene.js'
 import * as audio from './game/audio.js'
+import * as npc from './game/npc.js'
+import * as combat from './game/combat.js'
+import * as weapons from './game/weapons.js'
+import * as deadeye from './game/deadeye.js'
+import * as weaponWheel from './game/weaponWheel.js'
+import * as gunsmith from './game/gunsmith.js'
+import * as player from './game/player.js'
+import * as horse from './game/horse.js'
 
 // ─────────────────────────────────────────
 // TUNING CONSTANTS
@@ -32,20 +39,21 @@ const CAPSULE_HALF_HEIGHT= 0.32
 const CAPSULE_BOTTOM     = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS  // 0.63
 const RAY_ORIGIN_OFFSET  = 0.40
 const RAY_LENGTH         = CAPSULE_BOTTOM + 0.15                 // 0.90
-const WALK_SPEED         = 2.2
-const RUN_SPEED          = 4.5
+// Speeds in u/s for a 0.96 u person (≈ 1.8 m, so 1 u ≈ 1.9 m): a walk, a run, a crouched creep,
+// and the careful pace while aiming (slower backwards). The Mixamo clips are timed to these.
+const WALK_SPEED         = 1.1
+const RUN_SPEED          = 3.4
+const CROUCH_SPEED       = 0.55
+const AIM_SPEED          = 0.95
+const AIM_BACK_SPEED     = 0.7
+const ROLL_SPEED         = 3.0           // during the roll's tumble
 const JUMP_SPEED         = 7.0
 const AIR_CONTROL        = 0.12
 const COYOTE_TIME        = 0.10
 const JUMP_BUFFER        = 0.12
-const FADE               = 0.2
-
-const SPEED = {
-    walkEnter: 0.6,
-    walkExit:  0.3,
-    runEnter:  3.6,
-    runExit:   3.0,
-}
+// Riding: the capsule is swapped for a wider one (a horse's barrel), same height, so the ground
+// probe and the camera rig need no other change.
+const HORSE_RADIUS       = 0.30
 
 const cloudObjects = []
 const SPAWN = { x: 0, y: 1.5, z: 0 }
@@ -80,6 +88,27 @@ const CAM = {
 const camera = new THREE.PerspectiveCamera(CAM.fov, window.innerWidth / window.innerHeight, 0.05, 300)
 let camYaw = 0, targetYaw = 0
 let camPitch = 0.4, targetPitch = 0.4
+
+// Over-the-shoulder rig used while aiming / just after firing (combat.aimBlend()).
+// The orbit camera looks DOWN at the player (pitch 0.4), so its centre line hits the
+// dirt a few units ahead; in the rig, aim elevation = camPitch - pitchOffset, so the
+// usual pitch aims level, and the bullet flies down the rig's centre line. Its FOV comes
+// from combat.aimFov() (55, or a scope's).
+const AIM_CAM = {
+    side:        0.30,    // u to the right of the head
+    height:      0.40,    // u above the capsule centre (≈ eye level)
+    distance:    0.95,
+    pitchOffset: 0.40,
+    minPitch:   -0.50,    // camPitch floor while aiming (aim ~50° up); 0.08 otherwise
+}
+const ORBIT_MIN_PITCH = 0.08
+// Stance offsets, eased in and out: crouched, the rig drops to the lower head; riding, it rises
+// to the rider's head and the orbit pulls back to frame the horse.
+const STANCE_CAM = {
+    crouch: { height: -0.2 },
+    ride:   { height: 0.45, distance: 1.3 },
+}
+let _crouchCam = 0, _rideCam = 0
 
 // ─────────────────────────────────────────
 // SHADOW SETTINGS
@@ -347,6 +376,7 @@ function updateInteraction(dt = 0) {
 
     for (const entry of interactables) {
         if (INTERACT_ACTIVE[entry.type] === false || entry._active === false) continue
+        if (entry.available && !entry.available()) continue      // a living gunsmith, a lootable body
         entry.object.getWorldPosition(_objPos3)
         const d = _charPos3.distanceTo(_objPos3)
         if (d < closestDist) { closestDist = d; closest = entry }
@@ -381,13 +411,20 @@ function interactLabel(type) {
         piano:         '[E] Play',
         suitcase_lid:  '[E] Open',
         cash_register: '[E] Open Register',
+        gunsmith:      '[E] Gunsmith',
+        loot:          '[E] Loot',
+        horse:         '[E] Ride',
     })[type] ?? '[E] Interact'
 }
 
 function triggerInteract(entry) {
     // Runtime gate (GUI). A disabled category or individual item does nothing.
     if (INTERACT_ACTIVE[entry.type] === false || entry._active === false) return
+    if (entry.available && !entry.available()) return
     switch (entry.type) {
+        case 'gunsmith':      gunsmith.open();                  break
+        case 'loot':          lootBody(entry);                  break
+        case 'horse':         mountHorse(entry.horse);          break
         case 'door':          interactDoor(entry);              break
         case 'door_vault':    interactDoor(entry, 2.1);         break
         case 'door_swinging': interactDoor(entry, SWING_ANGLE); break
@@ -724,20 +761,49 @@ function interactMessageBoard(entry) {
 // POINTER LOCK + MOUSE LOOK
 // ─────────────────────────────────────────
 let isLocked = false
-canvas.addEventListener('click', () => { if (isPlaying() && !isLocked && !wheelOpen) canvas.requestPointerLock() })
+// requestPointerLock() returns a promise in Chromium that rejects when the browser
+// refuses (e.g. re-locking right after Esc) — swallow that, the next click retries.
+canvas.addEventListener('click', () => { if (isPlaying() && !isLocked && !wheelOpen) canvas.requestPointerLock()?.catch?.(() => {}) })
 document.addEventListener('pointerlockchange', () => {
     isLocked = document.pointerLockElement === canvas
     crosshair.style.display = (isLocked && isPlaying() && !wheelOpen) ? 'block' : 'none'
 })
 document.addEventListener('mousemove', (e) => {
     if (!isLocked || wheelOpen || !isPlaying() || mapOpen) return
-    targetYaw   -= e.movementX * CAM.yawSensitivity
-    targetPitch += e.movementY * CAM.pitchSensitivity
-    targetPitch  = THREE.MathUtils.clamp(targetPitch, 0.08, 1.4)
+    // the weapon wheel steers with the mouse; the camera holds still underneath it
+    if (weaponWheel.isOpen()) { weaponWheel.move(e.movementX, e.movementY); return }
+    const sens = camera.fov / CAM.fov            // a scope's narrow FOV needs finer turns
+    targetYaw   -= e.movementX * CAM.yawSensitivity * sens
+    targetPitch += e.movementY * CAM.pitchSensitivity * sens
+    targetPitch  = THREE.MathUtils.clamp(targetPitch, combat.isAiming() ? AIM_CAM.minPitch : ORBIT_MIN_PITCH, 1.4)
 })
-// window.addEventListener('wheel', (e) => {
-//     CAM.distance = THREE.MathUtils.clamp(CAM.distance + e.deltaY * 0.01, 1.5, 14)
-// }, { passive: true })
+// Gunplay — only once the pointer is ALREADY locked, so the click that locks it
+// never fires a shot. Right mouse holds the aim rig. In Dead Eye a click paints a mark.
+const canShoot = () => isLocked && isPlaying() && !wheelOpen && !mapOpen && !combat.isDead()
+                       && !weaponWheel.isOpen() && !gunsmith.isOpen() && !player.locked()
+document.addEventListener('mousedown', (e) => {
+    if (!canShoot()) return
+    if (e.button === 0) {
+        if (deadeye.click()) return
+        if (weapons.equipped()) combat.triggerDown()
+        else if (!horse.riding()) throwPunch()             // unarmed: fists
+    }
+    else if (e.button === 2) combat.setAimHeld(true)
+})
+document.addEventListener('mouseup', (e) => {
+    if (e.button !== 2) return
+    combat.setAimHeld(false)
+    deadeye.releaseAim()                          // letting go of the aim fires what Dead Eye marked
+})
+canvas.addEventListener('contextmenu', (e) => e.preventDefault())
+// Mouse wheel: inside the weapon wheel it steps through the highlighted slot's guns;
+// otherwise it swaps to the next / previous gun you own.
+window.addEventListener('wheel', (e) => {
+    if (!isLocked || !isPlaying() || !e.deltaY) return
+    const dir = Math.sign(e.deltaY)
+    if (weaponWheel.isOpen()) weaponWheel.scroll(dir)
+    else if (canShoot() && !deadeye.isActive()) combat.cycleWeapon(dir)
+}, { passive: true })
 
 // ─────────────────────────────────────────
 // EMOTE WHEEL
@@ -756,18 +822,16 @@ function closeWheel() {
     wheelContainer.classList.add('hidden')
     if (canvas && !isLocked) setTimeout(() => canvas.requestPointerLock(), 100)
 }
+/** An emote from the wheel (player.EMOTES): only standing on the ground, on foot. */
 function playEmote(name) {
-    if (!actions[name]) return
-    lastLocomotionState = currentState
-    emotePlayTimer = ({ Wave: 1.0, Dance: 4.0, Celebrate: 2.8, Cry: 2.2 })[name] ?? 1.5
-    isPlayingEmote = true
-    setState(name)
     closeWheel()
+    if (!grounded || horse.riding() || combat.isDead()) return
+    crouched = false
+    player.act(name)
 }
 wheelSegments.forEach(seg => {
     seg.addEventListener('click', (e) => {
-        const n = seg.dataset.emote
-        playEmote(n.charAt(0).toUpperCase() + n.slice(1))
+        playEmote(seg.dataset.emote)
         e.stopPropagation()
     })
 })
@@ -778,8 +842,9 @@ document.addEventListener('click', (e) => {
 // ─────────────────────────────────────────
 // INPUT
 // ─────────────────────────────────────────
-const keys = { forward: false, backward: false, left: false, right: false, walk: false }
+const keys = { forward: false, backward: false, left: false, right: false, walk: false, gallop: false }
 let jumpBufferTimer = 0
+let crouched = false            // C toggles; bandits see a crouched player at a shorter range
 
 function isTyping() {
     const el = document.activeElement
@@ -798,6 +863,14 @@ window.addEventListener('keydown', (e) => {
         return
     }
 
+    // The gunsmith's panel is modal too: Esc or E leaves the shop, nothing else gets through.
+    if (gunsmith.isOpen()) {
+        if (e.code === 'Escape' || e.code === 'KeyE') gunsmith.close()
+        e.stopImmediatePropagation()
+        if (e.code !== 'F12') e.preventDefault()
+        return
+    }
+
     // Escape: universal pause / back. While PLAYING → close board first, else
     // pause. menu.js owns Escape while paused / in menus.
     if (e.code === 'Escape') {
@@ -813,8 +886,8 @@ window.addEventListener('keydown', (e) => {
         return
     }
 
-    // All other gameplay keys act only while playing.
-    if (getState() !== STATES.PLAYING) return
+    // All other gameplay keys act only while playing — and alive.
+    if (getState() !== STATES.PLAYING || combat.isDead()) return
 
     switch (e.code) {
         case 'KeyW': case 'ArrowUp':    keys.forward  = true; break
@@ -824,15 +897,45 @@ window.addEventListener('keydown', (e) => {
         case 'ShiftLeft': case 'ShiftRight': keys.walk = true; break
         case 'KeyV': wheelOpen ? closeWheel() : openWheel(); e.preventDefault(); break
         case 'KeyE':
-            if (nearestInteractable) triggerInteract(nearestInteractable)
+            if (horse.riding()) dismountHorse()
+            else if (nearestInteractable) triggerInteract(nearestInteractable)
             break
         case 'Space':
             e.preventDefault()
-            jumpBufferTimer = JUMP_BUFFER
+            if (horse.riding()) keys.gallop = true         // in the saddle Space spurs to a gallop
+            else jumpBufferTimer = JUMP_BUFFER
+            break
+        case 'KeyC':
+            if (!horse.riding() && !player.locked()) crouched = !crouched
+            break
+        case 'ControlLeft':
+            e.preventDefault()
+            startRoll()
             break
         case 'KeyM':
             openMap(false)   // open the full-screen map (Esc/M closes it)
             e.preventDefault()
+            break
+        case 'KeyR':
+            combat.reload()
+            break
+        // Hold Tab for the weapon wheel (Tab would otherwise move browser focus).
+        case 'Tab':
+            e.preventDefault()
+            if (!deadeye.isActive() && !wheelOpen) weaponWheel.open()
+            break
+        // 1-5 jump straight to a wheel slot: unarmed, sidearm, shotgun, rifle, sniper.
+        case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5': {
+            const cat = weapons.CATEGORIES[+e.code.slice(5) - 1]
+            if (weaponWheel.isOpen()) weaponWheel.hover(cat)
+            else if (!deadeye.isActive()) {
+                const id = cat === 'unarmed' ? null : weapons.selectedIn(cat)
+                if (cat === 'unarmed' || (id && weapons.owns(id))) combat.equip(id)
+            }
+            break
+        }
+        case 'KeyQ':
+            deadeye.toggle()
             break
     }
 })
@@ -843,8 +946,14 @@ window.addEventListener('keyup', (e) => {
         case 'KeyA': case 'ArrowLeft':  keys.left     = false; break
         case 'KeyD': case 'ArrowRight': keys.right    = false; break
         case 'ShiftLeft': case 'ShiftRight': keys.walk = false; break
+        case 'Space': keys.gallop = false; break
+        case 'Tab': weaponWheel.close(true); e.preventDefault(); break
     }
 })
+// A wheel left open by a lost key-up (alt-tab, focus change) would hold the world in slow
+// motion, so losing focus or the pointer closes it without changing weapons.
+window.addEventListener('blur', () => weaponWheel.close(false))
+document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement) weaponWheel.close(false) })
 
 // ─────────────────────────────────────────
 // GUI
@@ -889,6 +998,14 @@ sceneFolder.add(HUD, 'minimap').name('Minimap').onChange(v => {
 const auf = gui.addFolder('Audio')
 auf.add(audio.settings, 'master', 0, 1, 0.01).name('Master Volume').onChange(() => audio.applySettings())
 auf.add(audio.settings, 'mute').name('Mute').onChange(() => audio.applySettings())
+// Footsteps get their own controls: they are the most-repeated sound in the game
+// and the one people tune. Both play a sample as you change them, so you can
+// audition by ear rather than describing what you want.
+auf.add(audio.settings, 'footstepVolume', 0, 1, 0.01).name('Footsteps Volume')
+   .onChange(() => audio.applySettings())
+   .onFinishChange(() => audio.playFootstep({ volume: 1 }))
+auf.add(audio.settings, 'footstepSet', audio.FOOTSTEP_SETS).name('Footstep Sound')
+   .onChange(() => { audio.applySettings(); audio.playFootstep({ volume: 1 }) })
 
 // Runtime interaction toggles (behaviour only — these never change what is
 // rendered, so tris/draws/geom stay the same). To actually drop draw calls,
@@ -945,6 +1062,9 @@ dbf.add(DEBUG, 'showDoorColliders').name('Show Door Colliders').onChange(v => {
 let world           = null
 let characterBody   = null
 let characterCollider = null
+let rideCollider      = null      // the horse's barrel while riding (same body, same height, wider)
+/** Whichever of the two is live — rays from the player's own position must skip it. */
+const activeCollider = () => (horse.riding() ? rideCollider : characterCollider)
 
 async function initPhysics() {
     await RAPIER.init()
@@ -963,6 +1083,13 @@ async function initPhysics() {
             .setRestitution(0.0),
         characterBody
     )
+    rideCollider = world.createCollider(
+        RAPIER.ColliderDesc.capsule(CAPSULE_BOTTOM - HORSE_RADIUS, HORSE_RADIUS)
+            .setFriction(0.0)
+            .setRestitution(0.0),
+        characterBody
+    )
+    rideCollider.setEnabled(false)
 }
 
 // ─────────────────────────────────────────
@@ -1082,7 +1209,7 @@ function checkGround() {
     _rayOrigin.x = pos.x
     _rayOrigin.y = pos.y - (CAPSULE_BOTTOM - RAY_ORIGIN_OFFSET)
     _rayOrigin.z = pos.z
-    const hit = world.castRayAndGetNormal(_ray, RAY_LENGTH, false, undefined, undefined, characterCollider)
+    const hit = world.castRayAndGetNormal(_ray, RAY_LENGTH, false, undefined, undefined, activeCollider())
     return hit ? hit.normal.y > 0.5 : false
 }
 
@@ -1101,12 +1228,10 @@ let landMuteTimer = 0      // suppresses the ~90-unit autoSpawn drop (see resetW
 let coyoteTimer  = 0
 let hasMoveInput = false
 
+const _rollDir = new THREE.Vector3()
+
 function updateMovement(dt) {
     if (!characterBody) return
-    if (isPlayingEmote) {
-        characterBody.setLinvel({ x: 0, y: characterBody.linvel().y, z: 0 }, true)
-        return
-    }
 
     _yawQuat.setFromAxisAngle(_axisY, camYaw)
     _moveForward.set(0, 0, -1).applyQuaternion(_yawQuat).setY(0).normalize()
@@ -1120,7 +1245,34 @@ function updateMovement(dt) {
     hasMoveInput = _wishDir.lengthSq() > 0
     if (hasMoveInput) _wishDir.normalize()
 
-    const speed = keys.walk ? WALK_SPEED : RUN_SPEED
+    // In the saddle: the horse turns toward the keys and only ever runs the way it faces.
+    if (horse.riding()) {
+        const gait = keys.walk ? 'walk' : keys.gallop ? 'gallop' : 'canter'
+        const v = horse.steer(dt, _wishDir, gait)
+        characterBody.setLinvel({ x: v.x, y: characterBody.linvel().y, z: v.z }, true)
+        coyoteTimer = 0
+        jumpBufferTimer = 0
+        return
+    }
+
+    // Full-body actions hold the player still (a roll carries them); moving ends an emote.
+    const act = player.actionKey()
+    if (act && hasMoveInput && act !== 'roll' && act !== 'land') player.cancelAction()
+    if (player.locked()) {
+        const push = player.rollPush() * ROLL_SPEED
+        const vy = characterBody.linvel().y
+        characterBody.setLinvel({ x: _rollDir.x * push, y: vy, z: _rollDir.z * push }, true)
+        jumpBufferTimer = 0
+        return
+    }
+
+    let speed = keys.walk ? WALK_SPEED : RUN_SPEED
+    if (crouched) speed = CROUCH_SPEED
+    else if (combat.isAiming()) {
+        // aiming faces the crosshair: back-pedalling is slower than stepping forward or aside
+        const back = -_wishDir.dot(_moveForward)
+        speed = Math.min(speed, back > 0.7 ? AIM_BACK_SPEED : AIM_SPEED)
+    }
     const vel   = characterBody.linvel()
 
     if (grounded) {
@@ -1141,189 +1293,189 @@ function updateMovement(dt) {
         // Here, not the Space keydown: that only arms the buffer and fires even
         // when the jump is refused (no coyote time left).
         audio.play2D('swing', { volume: 0.4, rateJitter: 0.06 })
+        player.jump()
+        crouched = false
         jumpBufferTimer = 0
         coyoteTimer     = 0
     }
 }
 
-// ─────────────────────────────────────────
-// ANIMATION STATE MACHINE
-// ─────────────────────────────────────────
-let characterModel     = null
-let mixer              = null
-const actions          = {}
-let currentState       = ''
-let currentAction      = null
-let smoothedSpeed      = 0
-let airborneTimer      = 0
-let isPlayingEmote     = false
-let lastLocomotionState= 'Idle'
-let emotePlayTimer     = 0
-
-function setState(name) {
-    if (currentState === name) return
-    const next = actions[name]
-    if (!next) return
-    const prev = currentAction
-    next.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(FADE).play()
-    if (prev && prev !== next) prev.fadeOut(FADE)
-    currentAction = next
-    currentState  = name
-    if (animLabel) animLabel.textContent = name
+/** Left Ctrl: a forward roll, the way you're moving (or facing), on the ground and on foot. */
+function startRoll() {
+    if (!grounded || horse.riding() || player.locked() || combat.isDead()) return
+    if (hasMoveInput) _rollDir.copy(_wishDir)
+    else if (characterModel) _rollDir.set(0, 0, 1).applyQuaternion(characterModel.quaternion).setY(0).normalize()
+    if (!player.act('roll')) return
+    crouched = false
+    combat.setAimHeld(false)
+    if (characterModel) characterModel.quaternion.setFromAxisAngle(_axisY, Math.atan2(_rollDir.x, _rollDir.z))
+    audio.play2D('swing', { volume: 0.5, rateJitter: 0.1 })
 }
 
-function pickLocomotion() {
-    if (currentState === 'Run') {
-        return smoothedSpeed < SPEED.runExit
-            ? (smoothedSpeed < SPEED.walkExit ? 'Idle' : 'Walk')
-            : 'Run'
+// ─────────────────────────────────────────
+// FISTS — unarmed, a click throws a punch; it lands on whoever stands right in front
+// ─────────────────────────────────────────
+const PUNCH = { reach: 0.75, cos: Math.cos(THREE.MathUtils.degToRad(50)), damage: 22 }
+let _punchT = 0
+
+function throwPunch() {
+    if (!grounded || crouched) return
+    const delay = player.throwPunch()
+    if (delay == null) return
+    _punchT = delay
+    audio.play2D('swing', { volume: 0.45, rateJitter: 0.12 })
+}
+
+/** The fist arrives: hit the nearest NPC in reach and in front (bandits fight back; townsfolk cost $50). */
+function landPunch() {
+    if (!characterModel) return
+    _rollDir.set(0, 0, 1).applyQuaternion(characterModel.quaternion).setY(0).normalize()
+    const n = npc.nearestInFront(_smoothPos, _rollDir, PUNCH.reach, PUNCH.cos)
+    if (!n) return
+    npc.damage(n, PUNCH.damage, { from: _smoothPos })   // (plays the hit) a townsperson flees, a bandit fights back
+}
+
+// ─────────────────────────────────────────
+// HORSES — [E] by one to ride, [E] again to climb off
+// ─────────────────────────────────────────
+function mountHorse(h) {
+    if (combat.isDead() || player.locked() || !h || !horse.mount(h)) return
+    crouched = false
+    // long guns can't be worked from the saddle: the sidearm comes out instead
+    if (weapons.equippedWeapon()?.hold === 'rifle') {
+        const side = weapons.selectedIn('sidearm')
+        combat.equip(side && weapons.owns(side) ? side : null)
     }
-    if (currentState === 'Walk') {
-        if (smoothedSpeed > SPEED.runEnter) return 'Run'
-        if (smoothedSpeed < SPEED.walkExit) return 'Idle'
-        return 'Walk'
-    }
-    if (smoothedSpeed > SPEED.runEnter)  return 'Run'
-    if (smoothedSpeed > SPEED.walkEnter) return 'Walk'
-    return 'Idle'
+    characterCollider.setEnabled(false)
+    rideCollider.setEnabled(true)
+    teleportTo(h.pos.x, h.pos.y + CAPSULE_BOTTOM + 0.02, h.pos.z)
+    targetYaw = camYaw = h.yaw + Math.PI                         // the camera behind the horse
+    nearestInteractable = null
+    _interactPrompt.style.display = 'none'
+}
+
+function dismountHorse() {
+    const h = horse.riding()
+    if (!h) return
+    // step off on the left, else the right, else behind: wherever a wall isn't
+    const spots = [[Math.cos(h.yaw), -Math.sin(h.yaw)], [-Math.cos(h.yaw), Math.sin(h.yaw)], [-Math.sin(h.yaw), -Math.cos(h.yaw)]]
+    let spot = spots[0]
+    for (const s of spots) if (!wallBetween(h.pos.x, h.pos.y + 0.45, h.pos.z, s[0], s[1], 0.75)) { spot = s; break }
+    horse.dismount()
+    rideCollider.setEnabled(false)
+    characterCollider.setEnabled(true)
+    teleportTo(h.pos.x + spot[0] * 0.55, h.pos.y + CAPSULE_BOTTOM + 0.05, h.pos.z + spot[1] * 0.55)
+    if (characterModel) characterModel.quaternion.setFromAxisAngle(_axisY, h.yaw)
+}
+
+const _wallRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 })
+function wallBetween(x, y, z, dx, dz, len) {
+    _wallRay.origin = { x, y, z }
+    _wallRay.dir = { x: dx, y: 0, z: dz }
+    return !!world.castRay(_wallRay, len, true, undefined, undefined, activeCollider())
+}
+
+const _seat = { position: new THREE.Vector3(), yaw: 0 }
+// Mixamo has no riding clip: Sitting Idle (a chair) reshaped for a saddle (player.animate). rad:
+// thighs apart about the body's forward axis, thighs and shins angled down about its right.
+const RIDER_POSE = { spread: 0.42, thigh: 0.35, shin: 0.3 }
+// How far round (rad from straight ahead) a rider can aim: the back turns up to player.MAX_TWIST
+// and the revolver arm swings the rest. Further to the left, because the gun arm already sits
+// left of the chest; to the right it has to swing across the body.
+const MOUNT_AIM_ARC = { left: 2.3, right: 1.8 }
+
+/** Put the capsule somewhere (and reseed the interpolation, so the camera doesn't sweep there). */
+function teleportTo(x, y, z) {
+    characterBody.setTranslation({ x, y, z }, true)
+    characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    const p = characterBody.translation()
+    _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
+    landMuteTimer = Math.max(landMuteTimer, 0.5)
+    wasGrounded = true
+}
+
+// ─────────────────────────────────────────
+// ANIMATION — player.js picks the Mixamo clips; this reports what the body is doing
+// ─────────────────────────────────────────
+let characterModel     = null
+let smoothedSpeed      = 0
+let airborneTimer      = 0
+let _lastAnimLabel     = ''
+const _facing = new THREE.Vector3(), _side = new THREE.Vector3()
+
+function updateAnimation(dt) {
+    if (!characterBody || !characterModel) return
+    const vel = characterBody.linvel()
+    smoothedSpeed = THREE.MathUtils.lerp(smoothedSpeed, Math.hypot(vel.x, vel.z), 0.25)
+    airborneTimer = grounded ? 0 : airborneTimer + dt
+    // velocity in the body's own frame, for the aimed strafes and back-pedal
+    _facing.set(0, 0, 1).applyQuaternion(characterModel.quaternion)
+    _side.set(-_facing.z, 0, _facing.x)                         // the body's right (it faces +z, right hand at -x)
+    const w = weapons.equippedWeapon()
+    player.update(dt, {
+        speed: smoothedSpeed,
+        fwd: vel.x * _facing.x + vel.z * _facing.z,
+        side: vel.x * _side.x + vel.z * _side.z,
+        grounded: grounded || !!horse.riding(),
+        air: horse.riding() ? 0 : airborneTimer,
+        crouch: crouched,
+        aim: player.locked() ? 0 : combat.aimBlend(),
+        hold: w && !combat.isScoped() ? w.hold : null,
+        mounted: !!horse.riding(),
+    })
+    const label = player.debug.state().base
+    if (animLabel && label !== _lastAnimLabel) animLabel.textContent = _lastAnimLabel = label
 }
 
 // ─────────────────────────────────────────
 // FOOTSTEPS / LANDING
 //
-// Distance accumulator, not a timer: frame-rate independent by construction,
-// and the constants read as physical stride lengths (a person is 0.96 units
-// tall here). Gated on the animation state — pickLocomotion() already carries
-// tuned hysteresis and structurally excludes Jump, Idle and the emotes.
+// player.js calls back on each footfall of the walk / run / creep clips (their contact
+// frames), so steps land when the feet do. Relative volumes only: absolute loudness is set
+// in audio.js (each buffer normalised, then the Footsteps slider).
 // ─────────────────────────────────────────
-const STRIDE_WALK   = 1.10   // units between footfalls at WALK_SPEED → ~0.50s
-const STRIDE_RUN    = 1.45   // units between footfalls at RUN_SPEED  → ~0.32s
-const STRIDE_PRIME  = 0.35   // pre-charge so the first step isn't a full stride late
-const STEP_VOL_WALK = 0.45
-const STEP_VOL_RUN  = 0.80
+const STEP_VOL = { walk: 0.63, run: 1.0, crouch: 0.35 }
+const STEP_VOL_JITTER = 0.15   // ±15% per step so the rhythm isn't machine-regular
 
 const LAND_MIN_IMPACT  = 3.0   // below this it's a kerb, not a fall
 const LAND_FULL_IMPACT = 8.0
 
-let _stepAccum = STRIDE_PRIME
-
-function updateFootsteps(dt) {
-    // `grounded &&` is NOT redundant: setState('Jump') only fires once
-    // airborneTimer > COYOTE_TIME, so currentState can read 'Walk' for up to
-    // 0.1s in mid-air after stepping off a kerb.
-    const moving = grounded && (currentState === 'Walk' || currentState === 'Run')
-    if (!moving) { _stepAccum = STRIDE_PRIME; return }
-
-    // Never read keys.walk here — it lies during the deceleration ramp after
-    // Shift is released. smoothedSpeed is the observed result.
-    const t      = THREE.MathUtils.clamp((smoothedSpeed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED), 0, 1)
-    const stride = THREE.MathUtils.lerp(STRIDE_WALK, STRIDE_RUN, t)
-
-    _stepAccum += smoothedSpeed * dt
-    if (_stepAccum < stride) return
-    _stepAccum -= stride         // subtract, don't zero — keeps cadence phase stable
-
-    audio.play2D('footstep', {
-        volume: THREE.MathUtils.lerp(STEP_VOL_WALK, STEP_VOL_RUN, t),
-        rateJitter: 0.08,
-    })
-}
+player.onFootstep(({ run }) => {
+    if (!grounded || horse.riding()) return
+    const v = crouched ? STEP_VOL.crouch : run ? STEP_VOL.run : STEP_VOL.walk
+    audio.playFootstep({ volume: v * (1 + (Math.random() * 2 - 1) * STEP_VOL_JITTER), rateJitter: 0.08 })
+})
 
 function onLanded(impact) {
     if (landMuteTimer > 0) return             // autoSpawn drops the player ~90 units
     if (airborneTimer <= COYOTE_TIME) return  // trimesh micro-bounce, not a real fall
     if (impact < LAND_MIN_IMPACT) return      // stepped off a lip
+    player.land(impact, airborneTimer)
 
     const t = THREE.MathUtils.clamp(
         (impact - LAND_MIN_IMPACT) / (LAND_FULL_IMPACT - LAND_MIN_IMPACT), 0, 1)
-    audio.play2D(t > 0.5 ? 'land_hard' : 'footstep',
-                 { volume: THREE.MathUtils.lerp(0.35, 0.9, t), rateJitter: 0.05 })
-}
-
-function updateAnimation(dt) {
-    if (!mixer || !characterBody) return
-    if (isPlayingEmote) {
-        emotePlayTimer -= dt
-        if (emotePlayTimer <= 0) { isPlayingEmote = false; setState(lastLocomotionState) }
-        return
+    if (t > 0.5) {
+        // A real fall: a thud, deliberately well above a footstep but not door-loud.
+        audio.play2D('land_hard', { volume: THREE.MathUtils.lerp(0.3, 0.65, t), rateJitter: 0.05 })
+    } else {
+        // A small drop: just a heavier footfall on the active surface.
+        audio.playFootstep({ volume: THREE.MathUtils.lerp(1.1, 1.6, t * 2), rateJitter: 0.05 })
     }
-    const vel = characterBody.linvel()
-    smoothedSpeed = THREE.MathUtils.lerp(smoothedSpeed, Math.hypot(vel.x, vel.z), 0.25)
-    airborneTimer = grounded ? 0 : airborneTimer + dt
-    if      (currentState === 'Jump' && grounded)      setState(pickLocomotion())
-    else if (currentState !== 'Jump' && airborneTimer > COYOTE_TIME) setState('Jump')
-    else if (currentState !== 'Jump')                  setState(pickLocomotion())
 }
 
 // ─────────────────────────────────────────
 // CHARACTER LOADING
 // ─────────────────────────────────────────
-const ANIM_FILES = [
-    { name: 'Idle',      path: './animations/Idle.fbx' },
-    { name: 'Jump',      path: './animations/Jump.fbx' },
-    { name: 'Run',       path: './animations/Running.fbx' },
-    { name: 'Walk',      path: './animations/Walking.fbx' },
-    { name: 'Wave',      path: './animations/Waving.fbx' },
-    { name: 'Dance',     path: './animations/Wave Hip Hop Dance.fbx' },
-    { name: 'Celebrate', path: './animations/Rallying.fbx' },
-    { name: 'Cry',       path: './animations/Crying.fbx' },
-]
-
-const loadFBX = (loader, path) =>
-    new Promise((res, rej) => loader.load(path, res, undefined, rej))
-
-function makeInPlace(clip) {
-    for (const track of clip.tracks) {
-        if (!track.name.endsWith('.position')) continue
-        const v = track.values
-        const x0 = v[0], z0 = v[2]
-        for (let i = 0; i < v.length; i += 3) { v[i] = x0; v[i+2] = z0 }
-    }
-    return clip
-}
-
+// The player: "GA 451 Rugged Cowboy" (Sketchfab, Galaxy Abundant, CC-BY), rigged by Mixamo's auto-rigger,
+// with Mixamo's clips (player.js, cast.js). A blue capsule stands in if it fails to load.
 async function loadCharacter() {
-    const loader = new FBXLoader()
-    let fbx
-    try {
-        fbx = await loadFBX(loader, './character/Y Bot.fbx')
-    } catch (err) {
-        console.warn('[character] FBX failed, using fallback capsule', err)
-        createFallbackCharacter()
-        return false
-    }
-
-    characterModel = fbx
-    characterModel.scale.setScalar(0.005)
+    const model = await player.loadPlayer(scene)
+    if (!model) { createFallbackCharacter(); return false }
+    characterModel = model
     characterModel.traverse(c => {
         if (c.isMesh) { c.castShadow = SHADOW.meshCastShadow; c.receiveShadow = SHADOW.meshReceiveShadow }
     })
-    scene.add(characterModel)
-    mixer = new THREE.AnimationMixer(characterModel)
-
-    let done = 0
-    await Promise.all(ANIM_FILES.map(async ({ name, path }) => {
-        try {
-            const animFbx = await loadFBX(loader, path)
-            const clip    = animFbx.animations[0]
-            if (clip) {
-                clip.name = name
-                makeInPlace(clip)
-                const action   = mixer.clipAction(clip)
-                const isEmote  = ['Wave','Dance','Celebrate','Cry'].includes(name)
-                action.loop    = (isEmote || name === 'Jump') ? THREE.LoopOnce : THREE.LoopRepeat
-                action.clampWhenFinished = isEmote || name === 'Jump'
-                actions[name]  = action
-            }
-        } catch (err) {
-            console.warn(`[anim] failed to load ${name}`, err)
-        } finally {
-            setLoading(50 + (++done / ANIM_FILES.length) * 40)
-        }
-    }))
-
-    if (actions.Idle) setState('Idle')
-    else if (actions.Walk) setState('Walk')
+    setLoading(80)
     return true
 }
 
@@ -1581,15 +1733,46 @@ window.addEventListener('resize', () => {
 const _camTarget = new THREE.Vector3()
 const _camOffset = new THREE.Vector3()
 
+const _aimFwd    = new THREE.Vector3()
+const _aimPos    = new THREE.Vector3()
+const _aimLook   = new THREE.Vector3()
+
+let _camOverride = null          // dev only (headless screenshots): { pos: [x,y,z], look: [x,y,z] }
+
 function syncCamera(charPos) {
-    _camTarget.set(charPos.x, charPos.y + CAM.height, charPos.z)
-    const d = CAM.distance
+    const stanceH = STANCE_CAM.crouch.height * _crouchCam + STANCE_CAM.ride.height * _rideCam
+    _camTarget.set(charPos.x, charPos.y + CAM.height + stanceH, charPos.z)
+    const d = CAM.distance + STANCE_CAM.ride.distance * _rideCam
     _camOffset.set(
         d * Math.sin(camYaw)  * Math.cos(camPitch),
         d * Math.sin(camPitch),
         d * Math.cos(camYaw)  * Math.cos(camPitch)
     )
     camera.position.copy(_camTarget).add(_camOffset)
+
+    // Shoulder rig: looking along (yaw, camPitch - offset) from beside the head. Its
+    // pose is handed to combat every frame, so a shot fired mid-transition still goes
+    // where the crosshair is about to settle.
+    const ap = camPitch - AIM_CAM.pitchOffset
+    _aimFwd.set(-Math.sin(camYaw) * Math.cos(ap), -Math.sin(ap), -Math.cos(camYaw) * Math.cos(ap))
+    _aimPos.set(charPos.x, charPos.y + AIM_CAM.height + stanceH, charPos.z)
+        .addScaledVector(_aimFwd, -AIM_CAM.distance)
+    _aimPos.x += Math.cos(camYaw) * AIM_CAM.side           // camera-right = (cos yaw, 0, -sin yaw)
+    _aimPos.z -= Math.sin(camYaw) * AIM_CAM.side
+    combat.setAimPose(_aimPos, _aimFwd)
+
+    const a = combat.aimBlend()
+    if (a > 0) {
+        _aimLook.copy(_aimPos).addScaledVector(_aimFwd, 10)
+        camera.position.lerp(_aimPos, a)
+        _camTarget.lerp(_aimLook, a)
+    }
+    const fov = THREE.MathUtils.lerp(CAM.fov, combat.aimFov(), a)     // a scoped rifle narrows it further
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix() }
+    if (_camOverride) {
+        camera.position.fromArray(_camOverride.pos)
+        _camTarget.fromArray(_camOverride.look)
+    }
     camera.lookAt(_camTarget)
 }
 
@@ -1850,10 +2033,16 @@ function renderFullMap() {
     mapBlip.style.transform = `translate(-50%,-50%) rotate(${camYaw}rad)`
 }
 
+let _skipRender = false
+
 function tick() {
     requestAnimationFrame(tick)
-    const delta = Math.min(clock.getDelta(), 0.1)
-    updatePerfPanel(delta)
+    // realDelta drives the camera, aiming, HUD and Dead Eye's own clock; the world (physics,
+    // animation, NPCs, doors) runs on `delta`, which the weapon wheel and Dead Eye slow and
+    // the gunsmith's panel stops.
+    const realDelta = Math.min(clock.getDelta(), 0.1)
+    const delta = realDelta * timeScale()
+    updatePerfPanel(realDelta)
 
     const playing = isPlaying()
 
@@ -1863,34 +2052,78 @@ function tick() {
         const alpha = THREE.MathUtils.clamp(physicsAccumulator / FIXED_TIME_STEP, 0, 1)
         _smoothPos.copy(_prevPos).lerp(_currPos, alpha)
 
-        if (characterModel) {
+        const mounted = horse.riding()
+        _crouchCam = THREE.MathUtils.damp(_crouchCam, crouched ? 1 : 0, 8, realDelta)
+        _rideCam   = THREE.MathUtils.damp(_rideCam, mounted ? 1 : 0, 4, realDelta)
+
+        if (characterModel && !mounted) {
             characterModel.position.set(_smoothPos.x, _smoothPos.y - CAPSULE_BOTTOM, _smoothPos.z)
             updateCapsuleHelper()
             const vel = characterBody.linvel()
-            if (Math.abs(vel.x) > 0.3 || Math.abs(vel.z) > 0.3) {
+            if (combat.isAiming() && !player.locked()) {
+                // square up to where the camera looks (the camera sits at +yaw, looking back), side-on:
+                // a revolver a little (the clip's two-handed grip then points there), a long gun more
+                const hold = weapons.equippedWeapon()?.hold
+                const blade = hold === 'pistol' ? player.PISTOL_ARM_YAW : hold === 'rifle' ? player.RIFLE_BODY_YAW : 0
+                _targetQuat.setFromAxisAngle(_axisY, camYaw + Math.PI - blade)
+                characterModel.quaternion.slerp(_targetQuat, Math.min(1, 20 * realDelta))
+            } else if (player.actionKey() !== 'roll' && (Math.abs(vel.x) > 0.3 || Math.abs(vel.z) > 0.3)) {
                 _targetQuat.setFromAxisAngle(_axisY, Math.atan2(vel.x, vel.z))
                 characterModel.quaternion.slerp(_targetQuat, Math.min(1, 12 * delta))
             }
         }
+        // leaving the aim rig: the orbit camera may not go below its own floor
+        if (!combat.isAiming() && targetPitch < ORBIT_MIN_PITCH) targetPitch = ORBIT_MIN_PITCH
 
-        camYaw   = THREE.MathUtils.damp(camYaw,   targetYaw,   CAM.damping, delta)
-        camPitch = THREE.MathUtils.damp(camPitch,  targetPitch, CAM.damping, delta)
+        // In the saddle the aim can swing round to either side, but not straight back over the
+        // horse's rump: past MOUNT_AIM_ARC the rider would have to twist further than a body bends.
+        if (mounted && combat.isAiming()) {
+            const rel = Math.atan2(Math.sin(targetYaw + Math.PI - mounted.yaw), Math.cos(targetYaw + Math.PI - mounted.yaw))
+            const arc = rel > 0 ? MOUNT_AIM_ARC.left : MOUNT_AIM_ARC.right
+            if (Math.abs(rel) > arc) targetYaw += Math.sign(rel) * arc - rel
+        }
+        camYaw   = THREE.MathUtils.damp(camYaw,   targetYaw,   CAM.damping, realDelta)
+        camPitch = THREE.MathUtils.damp(camPitch,  targetPitch, CAM.damping, realDelta)
         syncCamera(_smoothPos)
 
+        // the ridden horse stands under the capsule; the rider sits on its saddle bone
+        if (mounted) {
+            const v = characterBody.linvel()
+            horse.follow(_smoothPos.x, _smoothPos.y - CAPSULE_BOTTOM, _smoothPos.z, Math.hypot(v.x, v.z))
+        }
+        horse.updateHorses(delta)
+        if (mounted && characterModel && horse.seat(_seat)) {
+            characterModel.position.copy(_seat.position)
+            characterModel.quaternion.setFromAxisAngle(_axisY, _seat.yaw)
+        }
+
         updateAnimation(delta)
-        updateFootsteps(delta)
-        updateInteraction(delta)
+        if (_punchT > 0 && (_punchT -= delta) <= 0) landPunch()
+        npc.updateNpcs(delta)
+        updateInteraction(realDelta)
         updateDoorAnims(delta)   // syncs each door's collider while it animates
         updatePropAnims(delta)
         updateDoorHelpers()
         missions.updateMissions(delta)
+        if (_deathT > 0 && (_deathT -= delta) <= 0 && combat.isDead()) respawnAfterDeath()
     } else if (world && characterBody && characterModel) {
         // Paused / dialogue / menu (with world loaded): hold the camera on the
         // frozen frame; no physics step, no animation advance.
         syncCamera(_smoothPos)
     }
 
-    if (mixer && playing) mixer.update(delta)
+    if (playing && characterModel) {
+        // In the saddle the body faces where the horse does; aiming turns the chest round to the crosshair.
+        const h = horse.riding()
+        const aimYaw = h ? Math.atan2(Math.sin(camYaw + Math.PI - h.yaw), Math.cos(camYaw + Math.PI - h.yaw)) : 0
+        player.animate(delta, { rider: h ? RIDER_POSE : null, aimYaw, aim: h && combat.isAiming() ? combat.aimBlend() : 0 })
+        combat.updateCombat(realDelta)           // after the mixer: arm aim + carried guns
+        deadeye.updateDeadEye(realDelta)
+    }
+
+    // Dev only: headless checks on a software renderer take ~1 s to draw the town, so their logic
+    // runs with drawing switched off (window.__deadMesa.skipRender) and turns it on for screenshots.
+    if (_skipRender) return
 
     // Main render (full viewport), then the minimap region on top.
     renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
@@ -1922,7 +2155,7 @@ function showSubtitle(text, ms = 3500) {
 // ─────────────────────────────────────────
 // MONEY — GTA-style cash readout, top-right
 // ─────────────────────────────────────────
-const MONEY_START    = 0
+const MONEY_START    = 250       // enough for a second gun and some ammo at the gunsmith
 const MONEY_FLASH_MS = 1400      // how long the delta lingers after a change
 
 let money = MONEY_START
@@ -1966,6 +2199,122 @@ function addMoney(amount) {
     }, MONEY_FLASH_MS)
 }
 
+// ─────────────────────────────────────────
+// KILLS — bandits pay a bounty; shooting a townsperson costs you
+// ─────────────────────────────────────────
+const BOUNTY_BANDIT   = 40
+const PENALTY_CIVILIAN = 50
+
+function onNpcKilled(n) {
+    if (n.hostile) {
+        addMoney(BOUNTY_BANDIT)
+        addLootable(n)
+    } else {
+        addMoney(-PENALTY_CIVILIAN)
+        showSubtitle(`You shot a townsperson. −${formatMoney(PENALTY_CIVILIAN)}`, 3000)
+    }
+}
+
+// ─────────────────────────────────────────
+// LOOT — a dead bandit can be searched once ([E]) while the body lies there:
+// some revolver cartridges, sometimes rifle or shotgun ammo, a few dollars.
+// ─────────────────────────────────────────
+const LOOT = {
+    revolver:    [6, 12],
+    otherChance: 0.4,       // … plus rifle or shotgun ammo this often
+    other:       [4, 8],
+    cash:        [3, 15],
+}
+
+function removeInteractable(pred) {
+    for (let i = interactables.length - 1; i >= 0; i--) if (pred(interactables[i])) interactables.splice(i, 1)
+    if (nearestInteractable && !interactables.includes(nearestInteractable)) {
+        nearestInteractable = null
+        _interactPrompt.style.display = 'none'
+    }
+}
+
+function addLootable(n) {
+    removeInteractable(e => e.npc === n)                  // a respawned bandit's old body
+    interactables.push({ type: 'loot', object: n.root, npc: n, available: () => n.state === 'dead' && !n.hidden })
+}
+
+function lootBody(entry) {
+    if (entry.looted) return
+    entry.looted = true
+    crouched = false
+    player.act('pickup')
+    const rand = ([a, b]) => THREE.MathUtils.randInt(a, b)
+    const got = []
+    const r = weapons.addAmmo('revolver', rand(LOOT.revolver))
+    if (r) got.push(`${r} revolver`)
+    if (Math.random() < LOOT.otherChance) {
+        const type = Math.random() < 0.5 ? 'rifle' : 'shotgun'
+        const k = weapons.addAmmo(type, rand(LOOT.other))
+        if (k) got.push(`${k} ${type}`)
+    }
+    const cash = rand(LOOT.cash)
+    addMoney(cash)
+    audio.playAt(entry.object, 'case_open', { volume: 0.6, rateJitter: 0.1 })
+    showSubtitle(`Looted ${got.length ? got.join(', ') + ' rounds and ' : ''}${formatMoney(cash)}`, 2600)
+    combat.updateHud()
+    removeInteractable(e => e === entry)
+}
+
+// The gunsmith's counter: his shop pays with this cash.
+const shopApi = {
+    getMoney: () => money,
+    spend(n) { if (money < n) return false; addMoney(-n); return true },
+    // closing with a click is a user gesture, so the mouse can be re-captured straight away
+    onClose: () => { if (isPlaying()) canvas.requestPointerLock()?.catch?.(() => {}) },
+}
+
+/** World time scale: the shop freezes it, the weapon wheel and Dead Eye slow it. */
+const timeScale = () => (gunsmith.isOpen() ? 0 : Math.min(weaponWheel.timeScale(), deadeye.timeScale()))
+
+// ─────────────────────────────────────────
+// DEATH — "You Died", then back to the start with a quarter of the cash gone.
+// Timed in game time (tick), so pausing on the death card freezes it, and New
+// Game / Load cancel it by resetting combat.
+// ─────────────────────────────────────────
+const DEATH_CASH_KEEP = 0.75
+const DEATH_CARD_TIME = 3.5     // s
+let _deathT    = 0
+let _deathLoss = 0
+
+const RESPAWN_MIN_REVOLVER = 12  // a broke player is never left without cartridges
+
+function onPlayerDeath() {
+    keys.forward = keys.backward = keys.left = keys.right = keys.walk = keys.gallop = false
+    if (horse.riding()) dismountHorse()          // shot out of the saddle
+    crouched = false
+    player.die()
+    weaponWheel.close(false)
+    deadeye.resetDeadEye(deadeye.getMeter())
+    _deathLoss = Math.floor(money * (1 - DEATH_CASH_KEEP))
+    _deathT    = DEATH_CARD_TIME
+    combat.showDeathCard(_deathLoss > 0 ? `Lost ${formatMoney(_deathLoss)}` : 'The desert keeps no score')
+    audio.play2D('bodyfall', { volume: 0.9 })
+}
+
+function respawnAfterDeath() {
+    if (cityModel) autoSpawn(cityModel)
+    const p = characterBody.translation()
+    _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
+    camYaw = targetYaw = 0
+    camPitch = targetPitch = 0.4
+    landMuteTimer = 3.0            // autoSpawn drops from high up; that is not a landing
+    wasGrounded   = true
+    player.revive()
+    combat.resetCombat()           // full health, hides the card; the guns and ammo are kept
+    const short = RESPAWN_MIN_REVOLVER - weapons.reserve('revolver')
+    if (short > 0) weapons.addAmmo('revolver', short)
+    combat.updateHud()
+    npc.resetHostiles()            // living bandits back to camp; the dead stay down
+    if (_deathLoss > 0) addMoney(-_deathLoss)
+    _deathLoss = 0
+}
+
 // World HUD elements that should only show while playing.
 const _hudInstructions = document.getElementById('instructions')
 
@@ -1996,6 +2345,7 @@ function setWorldHudVisible(v) {
     // Explicit 'block', not '': #money defaults to display:none in CSS so it
     // cannot flash before bootShell runs, and '' would fall back to that.
     moneyEl.style.display   = v ? 'block' : 'none'
+    combat.setHudVisible(v)
     const showMap = v && minimapVisible
     minimapContainer.style.display = showMap ? '' : 'none'
     compassLabel.style.display     = showMap ? '' : 'none'
@@ -2003,6 +2353,7 @@ function setWorldHudVisible(v) {
         crosshair.style.display       = 'none'
         _interactPrompt.style.display = 'none'
         closeMessageBoard()
+        weaponWheel.close(false)
     }
 }
 
@@ -2018,6 +2369,46 @@ async function startWorld() {
         setLoading(15); await initPhysics()
         setLoading(30); const cityOk = await loadCity()
         setLoading(50); await loadCharacter()
+        setLoading(80)
+        npc.initNpcs({
+            scene, camera, world, RAPIER,
+            getPlayerPos: () => _smoothPos,
+            getPlayerCollider: activeCollider,
+            isPlayerDead: () => combat.isDead(),
+            playerStance: () => (horse.riding() ? 'ride' : crouched ? 'crouch' : 'stand'),
+            sound: (name, pos, opts) => audio.playAt(pos, name, opts),
+            onKill: onNpcKilled,
+            damagePlayer: (n, from) => combat.damagePlayer(n, from),
+            fxShot: (from, to, opts) => combat.fxShot(from, to, opts),
+        })
+        combat.initCombat({
+            scene, camera, world, RAPIER,
+            getPlayerCollider: activeCollider,
+            getPlayerPos: () => _smoothPos,
+            getModel: () => characterModel,
+            body: player,                                  // fire / reload / hit clips
+            canAim: () => !player.locked(),                // not mid-roll, mid-emote, dead
+            isMounted: () => !!horse.riding(),             // a rider's left hand stays on the reins
+            kick: (rad) => { targetPitch = Math.max(AIM_CAM.minPitch, targetPitch - rad) },
+            onPlayerDeath,
+            hint: (text) => showSubtitle(text, 2500),
+        })
+        horse.initHorses({
+            scene, world, RAPIER,
+            groundAt: (x, z, fromY) => npc.debug.groundAt(x, z, fromY),
+            colliderGroups: npc.NPC_COLLIDER,
+            sound: (name, target, opts) => audio.playAt(target, name, opts),
+            sound2D: (name, opts) => audio.play2D(name, opts),
+        })
+        await Promise.all([npc.loadNpcs(), combat.loadCombat(), horse.loadHorses()])
+        for (const h of horse.herdList()) {
+            interactables.push({ type: 'horse', object: h.body, horse: h, available: () => !horse.riding() })
+        }
+        deadeye.initDeadEye({})                 // after combat: it draws on the combat HUD
+        // the gunsmith on the AMMUNITION store's porch runs the shop
+        const clerk = npc.npcByName('Gunsmith')
+        if (clerk) interactables.push({ type: 'gunsmith', object: clerk.root, npc: clerk,
+                                        available: () => clerk.state !== 'dead' && !clerk.hidden })
         setLoading(100)
 
         // Frustum cull audit
@@ -2046,8 +2437,19 @@ async function startWorld() {
     try { return await _worldStarting } finally { _worldStarting = null }
 }
 
+/** Off any horse and back on foot, standing, horses home (New Game, loading a save). */
+function resetStance() {
+    if (horse.riding()) { rideCollider.setEnabled(false); characterCollider.setEnabled(true) }
+    horse.resetHorses()
+    crouched = false
+    keys.gallop = false
+    _punchT = 0
+    player.revive()
+}
+
 // New Game when the world already exists: respawn instead of reloading.
 function resetWorldToDefaultSpawn() {
+    resetStance()
     if (cityModel) autoSpawn(cityModel)
     const p = characterBody.translation()
     _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true
@@ -2055,6 +2457,12 @@ function resetWorldToDefaultSpawn() {
     camPitch = targetPitch = 0.4
     setMoney(MONEY_START)
     for (const entry of interactables) entry._looted = false   // registers pay out again
+    removeInteractable(e => e.type === 'loot')
+    npc.resetNpcs()
+    weapons.newGame()               // the Cattleman and two boxes of cartridges
+    combat.resetCombat()
+    deadeye.resetDeadEye()
+    _deathT = 0; _deathLoss = 0
     // autoSpawn drops the player from box.min.y + 90 — without this every New
     // Game would open with a full-volume landing thud at ~65 u/s impact.
     landMuteTimer = 3.0
@@ -2069,6 +2477,9 @@ function captureSaveFromWorld() {
         camYaw:      targetYaw,
         camPitch:    targetPitch,
         money,
+        weapons:     weapons.serialize(),
+        deadEye:     Math.round(deadeye.getMeter()),
+        health:      Math.round(combat.getHealth()),
         ...missions.serializeProgress(),
         missionName: missions.getActiveMission()?.name ?? 'Free Roam',
         location:    'Dead Mesa',
@@ -2076,11 +2487,20 @@ function captureSaveFromWorld() {
 }
 
 function applySaveToWorld(d) {
+    resetStance()
     characterBody.setTranslation({ x: d.position.x, y: d.position.y, z: d.position.z }, true)
     characterBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
     targetYaw   = camYaw   = d.camYaw   ?? 0
     targetPitch = camPitch = d.camPitch ?? 0.4
     setMoney(d.money ?? MONEY_START)        // older saves predate money
+    combat.resetCombat()                    // alive, no death card pending …
+    _deathT = 0; _deathLoss = 0
+    weapons.restore(d.weapons, d.ammo)      // …then the saved guns + ammo (older saves: the starting
+    combat.ensureModels()                   //   kit, with their single revolver's rounds)
+    combat.setHealth(d.health)              //   and health (older saves: full)
+    deadeye.resetDeadEye(d.deadEye)
+    removeInteractable(e => e.type === 'loot')
+    npc.resetNpcs()                         // the town wakes up as it was at New Game
     const p = characterBody.translation()
     _currPos.set(p.x, p.y, p.z); _prevPos.copy(_currPos); _smoothPos.copy(_currPos); hasPrevState = true   // reseed interp
     landMuteTimer = 3.0            // a load teleport is not a fall
@@ -2133,6 +2553,48 @@ const worldApi = {
     showSubtitle,
 }
 
+// Dev-only handle for the headless checks (stripped from builds by Vite).
+if (import.meta.env.DEV) {
+    window.__deadMesa = {
+        worldApi,
+        setCamera(yaw, pitch = targetPitch) { targetYaw = camYaw = yaw; targetPitch = camPitch = pitch },
+        addMoney,
+        getMoney: () => money,
+        interactables: () => interactables.filter(e => !e.available || e.available()).map(e => ({ type: e.type, name: e.npc?.def.name })),
+        interact(type) { const e = interactables.find(e => e.type === type && (!e.available || e.available())); if (e) triggerInteract(e); return !!e },
+        timeScale,
+        capture: () => captureSaveFromWorld(),
+        apply: (d) => applySaveToWorld(d),
+        /** Look at the player from `offset` (relative to them, world axes); null restores the rig. */
+        viewPlayer(offset, lookUp = 0.25) {
+            if (!offset) { _camOverride = null; return }
+            const p = _smoothPos
+            _camOverride = { pos: [p.x + offset[0], p.y + offset[1], p.z + offset[2]], look: [p.x, p.y + lookUp, p.z] }
+        },
+        playerYaw: () => camYaw + Math.PI,
+        skipRender: (v) => { _skipRender = !!v },
+        riderPose: RIDER_POSE,                     // mutable, for tuning the saddle pose
+        seat: horse.SEAT,
+        anim: () => player.debug.state(),
+        horses: () => horse.debug.list(),
+        /** Ride the nearest horse (teleporting beside it first), or climb off with null. */
+        ride(name) {
+            if (name === null) { dismountHorse(); return !horse.riding() }
+            const h = horse.herdList().find(h => !name || h.place.name === name)
+            mountHorse(h)
+            return !!horse.riding()
+        },
+        setCrouch: (v) => { crouched = !!v },
+        roll: () => startRoll(),
+        punch: () => throwPunch(),
+        emote: (n) => playEmote(n),
+        state: () => ({ grounded, crouched, speed: +smoothedSpeed.toFixed(2), riding: !!horse.riding(),
+                        pos: characterBody.translation(), modelPos: characterModel?.position.toArray().map(v => +v.toFixed(2)) }),
+        /** Hold movement keys for tests: { forward, backward, left, right, walk, gallop }. */
+        keys: (k) => Object.assign(keys, k),
+    }
+}
+
 // ── State-driven side effects ──────────────────────────────
 onStateChange((next) => {
     const playing = next === STATES.PLAYING
@@ -2158,6 +2620,8 @@ function bootShell() {
 
     audio.initAudio(camera, scene)   // listener rides the camera; voices live in the scene
     missions.initMissions(worldApi)
+    weaponWheel.initWeaponWheel()
+    gunsmith.initGunsmith(shopApi)
     initCutscene()
     initMenu(hooks)
 

@@ -24,7 +24,6 @@ export default {
         restart({ restart: [
             '../static/map/**',
             '../static/character/**',
-            '../static/animations/**',
             '../static/textures/**',
         ] }),
         shotWriter(),   // dev-only: POST /__shot/[1-5] → static/loading/slide-N.jpg
